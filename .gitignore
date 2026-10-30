@@ -1,0 +1,18 @@
+# 构建产物
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# 本机调试产物（截图、探针日志、验证脚本体）
+_shots/
+_tools/
+_test/*.bat
+dist/
+
+# 打包与临时文件
+*.zip
+*.7z
+*.log
+*.tmp

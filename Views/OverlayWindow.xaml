@@ -1,0 +1,33 @@
+﻿<Window x:Class="PerfOverlay.Views.OverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="PerfOverlay"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        ResizeMode="NoResize"
+        SizeToContent="WidthAndHeight"
+        UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Ideal">
+
+    <!-- 纯文字叠加：无背景、无边框，只有一行白字（带黑色描边）。
+         宽度由子元素的固定宽度决定，窗口随内容自适应，不用手算。 -->
+    <StackPanel x:Name="RowsHost" Orientation="Horizontal" VerticalAlignment="Center"
+                Margin="2,0,2,0" />
+
+    <Window.ContextMenu>
+        <!-- 不再用系统默认灰底菜单，走 Themes/Styles.xaml 里的白蓝皮肤 -->
+        <ContextMenu x:Name="CtxMenu" Style="{StaticResource FloatingMenu}">
+            <MenuItem Header="控制面板" Style="{StaticResource FloatingMenuItem}"
+                      Click="OnMenuSettings" />
+            <MenuItem Header="隐藏浮窗" Style="{StaticResource FloatingMenuItem}"
+                      Click="OnMenuHide" />
+            <Separator Style="{StaticResource FloatingMenuSeparator}" />
+            <MenuItem Header="退出" Style="{StaticResource FloatingMenuItem}"
+                      Click="OnMenuExit" />
+        </ContextMenu>
+    </Window.ContextMenu>
+</Window>

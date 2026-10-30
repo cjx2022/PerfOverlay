@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>3D 帧率测试台</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #05070d; }
+  #c { display: block; }
+  #hud {
+    position: fixed; left: 24px; top: 20px; color: #fff;
+    font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+    font-size: 15px; line-height: 1.9; letter-spacing: .3px;
+    text-shadow: 0 0 6px #000, 0 1px 2px #000; user-select: none; pointer-events: none;
+  }
+  #hud b { font-size: 26px; font-weight: 600; }
+  #hud .row { display: flex; gap: 8px; align-items: baseline; }
+  #hud .k { color: #9db4d4; width: 92px; display: inline-block; }
+  #hud .hint { color: #6f87a8; font-size: 12px; margin-top: 10px; max-width: 420px; }
+  #hud .val { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="hud">
+  <div class="row"><span class="k">FPS</span><b id="fps" class="val">--</b></div>
+  <div class="row"><span class="k">1% Low</span><b id="low" class="val">--</b></div>
+  <div class="row"><span class="k">平均帧时间</span><span id="ms" class="val">--</span></div>
+  <div class="row"><span class="k">最差帧</span><span id="worst" class="val">--</span></div>
+  <div class="row"><span class="k">帧数</span><span id="cnt" class="val">0</span></div>
+  <div class="row"><span class="k">卡顿注入</span><span id="inject" class="val">--</span></div>
+  <div class="hint">这个面板的数字由页面自己按 requestAnimationFrame 计算，与浮窗读到的 ETW 帧数据互相印证。按 1/2/3/4 切换卡顿模式（无 / 轻 / 中 / 重）。</div>
+</div>
+
+<script src="three.min.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  // ---------------- 3D 场景：造稳定且可观的 GPU 负载 ----------------
+  var canvas = document.getElementById('c');
+  var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: false });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight, false);
+
+  var scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x05070d);
+  scene.fog = new THREE.Fog(0x05070d, 30, 120);
+
+  var camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 400);
+  camera.position.set(0, 14, 42);
+  camera.lookAt(0, 0, 0);
+
+  var geo = new THREE.BoxGeometry(1.6, 1.6, 1.6);
+  var mat = new THREE.MeshStandardMaterial({ color: 0x4c8bf5, roughness: 0.35, metalness: 0.45 });
+
+  var N = 18;                 // 18x18 = 324 个立方体，足够给 GPU 制造压力
+  var cubes = [];
+  for (var x = 0; x < N; x++) {
+    for (var z = 0; z < N; z++) {
+      var m = new THREE.Mesh(geo, mat.clone());
+      m.position.set((x - N / 2) * 2.4, 0, (z - N / 2) * 2.4);
+      m.userData.phase = Math.random() * Math.PI * 2;
+      scene.add(m);
+      cubes.push(m);
+    }
+  }
+
+  scene.add(new THREE.AmbientLight(0x8899bb, 0.75));
+  var dir = new THREE.DirectionalLight(0xffffff, 1.1);
+  dir.position.set(20, 40, 20);
+  scene.add(dir);
+  var p2 = new THREE.PointLight(0x2c6bf0, 2.2, 120);
+  p2.position.set(-20, 18, -10);
+  scene.add(p2);
+
+  window.addEventListener('resize', function () {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight, false);
+  });
+
+  // ---------------- 卡顿注入：制造可预期的长帧 ----------------
+  // 用同步忙等阻塞主线程，从而真正拉长 present 间隔（不是伪造数字）
+  var modes = [
+    { name: '无', every: 0, blockMs: 0 },
+    { name: '轻（每60帧卡25ms）', every: 60, blockMs: 25 },
+    { name: '中（每40帧卡45ms）', every: 40, blockMs: 45 },
+    { name: '重（每20帧卡90ms）', every: 20, blockMs: 90 }
+  ];
+  var mode = modes[0];
+
+  function busyWait(ms) {
+    var t0 = performance.now();
+    while (performance.now() - t0 < ms) { /* 占住主线程 */ }
+  }
+
+  // ---------------- 自统计（与浮窗口径一致的 1% Low） ----------------
+  var LOW_WINDOW = 10.0;    // 秒
+  var FPS_WINDOW = 1.0;
+  var frames = [];          // { t: 秒, ms: 帧时间 }
+  var lastT = 0;
+  var totalFrames = 0;
+
+  function lowFps(list, pct) {
+    if (!list.length) return 0;
+    var arr = list.slice().sort(function (a, b) { return b - a; });  // 降序：最卡在前
+    var worst = Math.max(1, Math.ceil(arr.length * pct));
+    if (worst > arr.length) worst = arr.length;
+    var sum = 0, used = 0;
+    for (var i = 0; i < worst; i++) { if (arr[i] > 0) { sum += arr[i]; used++; } }
+    if (!used || sum <= 0) return 0;
+    return 1000 / (sum / used);
+  }
+
+  var elFps = document.getElementById('fps');
+  var elLow = document.getElementById('low');
+  var elMs = document.getElementById('ms');
+  var elWorst = document.getElementById('worst');
+  var elCnt = document.getElementById('cnt');
+  var elInject = document.getElementById('inject');
+
+  var uiTimer = 0;
+
+  function updateHud(now) {
+    var i, mss = [];
+    var fpsCount = 0, firstT = 0, lastTT = 0;
+    for (i = frames.length - 1; i >= 0; i--) {
+      if (frames[i].t < now - LOW_WINDOW) break;
+    }
+    var start = Math.max(0, i + 1);
+
+    for (i = start; i < frames.length; i++) {
+      mss.push(frames[i].ms);
+      if (frames[i].t >= now - FPS_WINDOW) {
+        fpsCount++;
+        if (!firstT) firstT = frames[i].t;
+        lastTT = frames[i].t;
+      }
+    }
+
+    var span = lastTT - firstT;
+    var denom = span > 0.15 ? span : FPS_WINDOW;
+    var fps = fpsCount > 1 ? (fpsCount - 1) / denom : 0;
+
+    elFps.textContent = fps > 0 ? fps.toFixed(0) : '--';
+    elLow.textContent = mss.length >= 100 ? lowFps(mss, 0.01).toFixed(0) : '--';
+    elMs.textContent = mss.length ? (mss.reduce(function (a, b) { return a + b; }, 0) / mss.length).toFixed(2) + ' ms' : '--';
+    elWorst.textContent = mss.length ? Math.max.apply(null, mss).toFixed(1) + ' ms' : '--';
+    elCnt.textContent = totalFrames;
+    elInject.textContent = mode.name;
+  }
+
+  function loop(nowMs) {
+    requestAnimationFrame(loop);
+
+    var now = nowMs / 1000;
+    if (lastT > 0) {
+      var dt = now - lastT;
+      frames.push({ t: now, ms: dt * 1000 });
+    }
+    lastT = now;
+    totalFrames++;
+
+    // 卡顿注入
+    if (mode.every > 0 && totalFrames % mode.every === 0) busyWait(mode.blockMs);
+
+    // 场景动画
+    var t = now * 0.7;
+    for (var i = 0; i < cubes.length; i++) {
+      var c = cubes[i];
+      c.position.y = Math.sin(t + c.userData.phase) * 3.2 + 3.2;
+      c.rotation.x = t * 0.4 + c.userData.phase;
+      c.rotation.y = t * 0.6;
+    }
+    renderer.render(scene, camera);
+
+    // 清理 10 秒以外的帧
+    while (frames.length && frames[0].t < now - LOW_WINDOW) frames.shift();
+
+    if (now - uiTimer > 0.25) { uiTimer = now; updateHud(now); }
+  }
+
+  window.addEventListener('keydown', function (e) {
+    var k = e.key;
+    if (k >= '1' && k <= '4') {
+      mode = modes[parseInt(k, 10) - 1];
+      frames.length = 0;   // 切换模式后重新累计，避免新旧数据混在一起
+    }
+  });
+
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

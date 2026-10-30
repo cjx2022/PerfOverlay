@@ -1,0 +1,508 @@
+using System;
+using System.Collections.Generic;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Interop;
+using System.Windows.Media;
+using PerfOverlay.Controls;
+using PerfOverlay.Services;
+
+namespace PerfOverlay.Views
+{
+    /// <summary>
+    /// 裸文字叠加层：一行白字直接压在画面上（FPS 60  LOW 48  CPU 23% …），
+    /// 白字带黑色描边，保证在亮背景上也能看清。可在设置里切成淡卡片底。
+    /// </summary>
+    public partial class OverlayWindow : Window
+    {
+        private AppSettings _settings = new AppSettings();
+        private readonly Dictionary<string, GroupUi> _groups = new Dictionary<string, GroupUi>();
+
+        private bool _dragging;
+        private Point _lastScreenPoint;
+
+        private const int GWL_EXSTYLE = -20;
+        private const int WS_EX_TOOLWINDOW = 0x00000080;
+        private const int WS_EX_TRANSPARENT = 0x00000020;
+        private const int WS_EX_NOACTIVATE = 0x08000000;
+
+        // 贴角边距：复位后要紧贴右上角。这里基于「工作区」计算，所以顶部停靠的
+        // 任务栏/Dock 已经被工作区让开，不需要再额外加几十像素的固定偏移
+        // （以前 EdgeTop=52 是给顶部任务栏留的，在这台机器上等于白留一条 52 DIP 的缝）。
+        // EdgeTop 再收到 2：8 的时候肉眼还看得出"没贴上去"（1.25 DPI 下 8 DIP = 10 像素），
+        // 2 DIP 在物理屏上只有 2~3 像素，等于贴边但仍留出描边不被屏幕边缘压住的余地。
+        public const double EdgeRight = 8;
+        public const double EdgeTop = 2;
+
+        /// <summary>
+        /// 诊断用：把右键菜单在指定屏幕坐标展开，用于核对菜单皮肤的真实渲染。
+        /// 正常运行时不会调用。
+        /// </summary>
+        public void OpenMenuAt(double x, double y)
+        {
+            CtxMenu.PlacementTarget = this;
+            CtxMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.Absolute;
+            CtxMenu.HorizontalOffset = x;
+            CtxMenu.VerticalOffset = y;
+            CtxMenu.IsOpen = true;
+        }
+
+        public event EventHandler SettingsRequested;
+        public event EventHandler HideRequested;
+        public event EventHandler ExitRequested;
+        public event EventHandler<AppSettings> PositionChanged;
+
+        public OverlayWindow()
+        {
+            InitializeComponent();
+
+            MouseLeftButtonDown += OnCardMouseDown;
+            MouseMove += OnCardMouseMove;
+            MouseLeftButtonUp += OnCardMouseUp;
+            MouseRightButtonUp += OnCardRightClick;
+
+            // 宽度在 BuildGroups 里按实测文字算定，这里只需定位
+            Loaded += (s, e) => { UpdateLayout(); Reposition(); };
+            SizeChanged += (s, e) => Reposition();
+        }
+
+        protected override void OnSourceInitialized(EventArgs e)
+        {
+            base.OnSourceInitialized(e);
+            ApplyWindowStyle();
+        }
+
+        private void ApplyWindowStyle()
+        {
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd == IntPtr.Zero) return;
+
+            int ex = NativeMethods.GetWindowLong(hwnd, GWL_EXSTYLE);
+            ex |= WS_EX_TOOLWINDOW;
+            if (_settings.ClickThrough) ex |= WS_EX_TRANSPARENT | WS_EX_NOACTIVATE;
+            else ex &= ~(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE);
+            NativeMethods.SetWindowLong(hwnd, GWL_EXSTYLE, ex);
+        }
+
+        // ==================================================================
+        // 配置
+        // ==================================================================
+
+        public void ApplySettings(AppSettings s, bool rebuildRows)
+        {
+            _settings = s;
+            Opacity = Math.Max(0.3, Math.Min(1.0, s.Opacity));
+
+            if (rebuildRows) BuildGroups();
+
+            ApplyWindowStyle();
+            Reposition();
+        }
+
+        private void BuildGroups()
+        {
+            RowsHost.Children.Clear();
+            _groups.Clear();
+
+            double fs = _settings.FontSizeMain;
+            // 标签与数值的间隙：0.34 偏松（"FPS   60" 中间能塞进两个字），收到 0.22
+            double labelGap = Math.Round(fs * 0.22);
+            // 组间距：0.9 字高时 "FPS 60" 与 "low(1%) 12" 之间能塞进半个词，收到 0。
+            // 数值控件本身是定宽（防抖），"N/A" 填不满时尾部会留出约 0.8 字高的空白，
+            // 组间视觉空隙最终仍明显大于组内的 labelGap，两组不会糊在一起。
+            double groupGap = 0;
+
+            // 颜色与描边：描边关掉时 strokeW=0，宽度和绘制都不再预留外扩空间
+            Color textColor = ParseColor(_settings.TextColor);
+            Brush valueBrush = new SolidColorBrush(textColor);
+            Brush labelBrush = new SolidColorBrush(Color.FromArgb(0xE6, textColor.R, textColor.G, textColor.B));
+            Brush outlineBrush = _settings.ShowOutline ? ContrastOutline(textColor) : null;
+            double strokeW = _settings.ShowOutline ? StrokeWidth(fs) : 0;
+
+            // 值宽取「最宽可能值」的实测宽度：100% / 240 之类都不会顶破
+            double valueW = Math.Ceiling(Math.Max(
+                Math.Max(TextWidth("100%", fs, FontWeights.SemiBold), TextWidth("240", fs, FontWeights.SemiBold)),
+                fs * 2.4)) + strokeW;
+
+            var items = new List<string[]>();
+            if (_settings.ShowFps) items.Add(new[] { "fps", "FPS" });
+            // 标签文案：low(1%) 比裸 LOW 更说清口径
+            if (_settings.ShowLowFps) items.Add(new[] { "low", "low(1%)" });
+            if (_settings.ShowCpu) items.Add(new[] { "cpu", "CPU" });
+            if (_settings.ShowMemory) items.Add(new[] { "mem", "MEM" });
+            if (_settings.ShowVram) items.Add(new[] { "vram", "VRAM" });
+
+            for (int i = 0; i < items.Count; i++)
+            {
+                bool isLast = i == items.Count - 1;
+                double labelW = Math.Ceiling(TextWidth(items[i][1], fs, FontWeights.Normal)) + strokeW;
+                AddGroup(items[i][0], items[i][1], fs, labelW, valueW,
+                         labelGap, isLast ? 0 : groupGap, strokeW,
+                         labelBrush, valueBrush, outlineBrush);
+            }
+        }
+
+        private static double StrokeWidth(double fs)
+        {
+            return Math.Max(2.0, fs * 0.11);
+        }
+
+        /// <summary>解析 "#RRGGBB"；失败回落纯白，不让一个坏配置把文字变透明。</summary>
+        private static Color ParseColor(string hex)
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(hex))
+                {
+                    string h = hex.TrimStart('#');
+                    if (h.Length == 6)
+                    {
+                        return Color.FromRgb(
+                            Convert.ToByte(h.Substring(0, 2), 16),
+                            Convert.ToByte(h.Substring(2, 2), 16),
+                            Convert.ToByte(h.Substring(4, 2), 16));
+                    }
+                }
+            }
+            catch (Exception) { }
+            return Colors.White;
+        }
+
+        /// <summary>
+        /// 描边色按文字颜色自动取反：亮字配黑边，暗字配白边。
+        /// 这样只需暴露「描边开/关」，不必再让用户选描边颜色。
+        /// </summary>
+        private static Brush ContrastOutline(Color c)
+        {
+            double lum = (0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B) / 255.0;
+            return lum > 0.5 ? Brushes.Black : Brushes.White;
+        }
+
+        /// <summary>用 FormattedText 精确量文字宽度（DIP），与布局系统无关。</summary>
+        private static double TextWidth(string text, double fontSize, FontWeight weight)
+        {
+            try
+            {
+                var tf = new Typeface(new FontFamily("Segoe UI, Microsoft YaHei UI"),
+                                      FontStyles.Normal, weight, FontStretches.Normal);
+                var ft = new FormattedText(text, System.Globalization.CultureInfo.CurrentUICulture,
+                                           FlowDirection.LeftToRight, tf, fontSize, Brushes.Black, 1.0);
+                return ft.WidthIncludingTrailingWhitespace;
+            }
+            catch (Exception)
+            {
+                return text.Length * fontSize * 0.62;
+            }
+        }
+
+        private void AddGroup(string key, string label, double fs,
+                              double labelW, double valueW, double labelGap, double groupGap,
+                              double strokeW, Brush labelBrush, Brush valueBrush, Brush outlineBrush)
+        {
+            var root = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Margin = new Thickness(0, 0, groupGap, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
+            var lbl = new OutlineText
+            {
+                Text = label,
+                FontSize = fs,
+                Fill = labelBrush,
+                Outline = outlineBrush,
+                OutlineWidth = strokeW,
+                TextAlignment = TextAlignment.Left,
+                Width = labelW,
+                VerticalAlignment = VerticalAlignment.Bottom,
+                Margin = new Thickness(0, 0, labelGap, 2),
+                IsHitTestVisible = false
+            };
+
+            var val = new OutlineText
+            {
+                Text = "N/A",
+                FontSize = fs,
+                FontWeight = FontWeights.SemiBold,
+                Fill = valueBrush,
+                Outline = outlineBrush,
+                OutlineWidth = strokeW,
+                // 数值改成左对齐：右对齐时数值被推到 valueW 的右端，
+                // 「60」这种两位数前面会空出一大截，看着像 FPS 和 60 之间有大缝。
+                // valueW 仍然固定，所以组与组的列位置照样不抖，只是数值紧贴自己的标签。
+                TextAlignment = TextAlignment.Left,
+                Width = valueW,
+                VerticalAlignment = VerticalAlignment.Bottom,
+                Margin = new Thickness(0, 0, 0, 2),
+                IsHitTestVisible = false
+            };
+
+            root.Children.Add(lbl);
+            root.Children.Add(val);
+            RowsHost.Children.Add(root);
+
+            _groups[key] = new GroupUi { Root = root, Label = lbl, Value = val };
+        }
+
+        // ==================================================================
+        // 刷新
+        // ==================================================================
+
+        public void UpdateMetrics(MetricsSnapshot s)
+        {
+            if (!_settings.AnyMetricVisible()) return;
+
+            if (_settings.ShowCpu)
+                Set("cpu", s.CpuOk ? FormatPercent(s.CpuPercent) : null,
+                    s.CpuOk ? null : "CPU 读取失败");
+
+            if (_settings.ShowMemory)
+            {
+                bool ok = s.MemoryTotal > 0;
+                string tip = ok
+                    ? string.Format("{0:0.0} GB / {1:0.0} GB", s.MemoryUsed / 1073741824.0, s.MemoryTotal / 1073741824.0)
+                    : "内存读取失败";
+                Set("mem", ok ? FormatPercent(s.MemoryPercent) : null, tip);
+            }
+
+            if (_settings.ShowFps)
+            {
+                if (s.FpsOk)
+                    Set("fps", ((int)Math.Round(s.Fps)).ToString(),
+                        s.TargetProcess.Length > 0 ? ("前台：" + s.TargetProcess) : null);
+                else
+                    Set("fps", null, s.FpsMessage);
+            }
+
+            if (_settings.ShowLowFps)
+                Set("low", s.FpsOk ? ((int)Math.Round(s.LowFps)).ToString() : null,
+                    s.FpsOk ? "最近 10 秒最差 1% 帧" : s.FpsMessage);
+
+            if (_settings.ShowVram)
+            {
+                if (s.VramOk)
+                    Set("vram", FormatPercent(s.VramPercent),
+                        string.Format("已用 {0:0.0} GB / 共 {1:0.0} GB",
+                            s.VramUsed / 1073741824.0, s.VramBudget / 1073741824.0));
+                else
+                    Set("vram", null, "显存不可用");
+            }
+        }
+
+        private static string FormatPercent(double v)
+        {
+            return ((int)Math.Round(v)).ToString() + "%";
+        }
+
+        private void Set(string key, string text, string tooltip)
+        {
+            GroupUi g;
+            if (!_groups.TryGetValue(key, out g)) return;
+
+            // 三项都先判等再赋值。Opacity / ToolTip 原来是无条件写，
+            // 每 0.5 秒就把所有依赖属性刷一遍 —— 值没变却白白触发属性变更通知。
+            string show = string.IsNullOrEmpty(text) ? "N/A" : text;
+            bool changed = g.Value.Text != show;
+            if (changed) g.Value.Text = show;
+
+            double op = string.IsNullOrEmpty(text) ? 0.62 : 1.0;
+            if (Math.Abs(g.Value.Opacity - op) > 0.001) g.Value.Opacity = op;
+
+            // 显示值没变就不用管 tooltip（它同源，晚一拍更新无感）
+            if (!changed) return;
+
+            var curTip = g.Value.ToolTip as string;
+            bool tipEmpty = string.IsNullOrEmpty(tooltip);
+            if (tipEmpty ? curTip == null : string.Equals(curTip, tooltip, StringComparison.Ordinal)) return;
+            g.Value.ToolTip = tipEmpty ? null : tooltip;
+        }
+
+        // ==================================================================
+        // 定位：贴主屏右上角
+        // ==================================================================
+
+        public void Reposition()
+        {
+            // SizeToContent 下宽度由内容决定，必须用布局完成后的 ActualWidth；
+            // 布局还没跑完时依次退回 Width / DesiredSize，保证 Show 之前也有个合理位置。
+            double w = ActualWidth > 0 ? ActualWidth : Width;
+            if (double.IsNaN(w) || w <= 0) w = DesiredSize.Width;
+            if (double.IsNaN(w) || w <= 0) w = 200;
+
+            double workLeft, workTop, workRight, workBottom;
+            GetWorkAreaDip(out workLeft, out workTop, out workRight, out workBottom);
+
+            double left = workRight - w - EdgeRight + _settings.OffsetX;
+            double top = workTop + EdgeTop + _settings.OffsetY;
+
+            if (left < workLeft) left = workLeft;
+            if (left > workRight - 40) left = workRight - 40;
+            if (top < workTop) top = workTop;
+            if (top > workBottom - 24) top = workBottom - 24;
+
+            Left = left;
+            Top = top;
+        }
+
+        /// <summary>诊断用：当前 DPI 缩放。</summary>
+        public double GetDpiScale()
+        {
+            var dpi = VisualTreeHelper.GetDpi(this);
+            return dpi.DpiScaleX;
+        }
+
+        /// <summary>窗口右边缘到工作区右边缘的距离（DIP），正常应等于 EdgeRight。</summary>
+        public double RightMargin
+        {
+            get
+            {
+                double l, t, r, b;
+                GetWorkAreaDip(out l, out t, out r, out b);
+                return r - (Left + ActualWidth);
+            }
+        }
+
+        /// <summary>窗口上边缘到工作区上边缘的距离（DIP），正常应等于 EdgeTop。</summary>
+        public double TopMargin
+        {
+            get
+            {
+                double l, t, r, b;
+                GetWorkAreaDip(out l, out t, out r, out b);
+                return Top - t;
+            }
+        }
+
+        /// <summary>诊断用：当前认定的工作区（DIP）与窗口实际矩形。</summary>
+        public string GetWorkAreaText()
+        {
+            double l, t, r, b;
+            GetWorkAreaDip(out l, out t, out r, out b);
+            return string.Format("L={0:0.0} T={1:0.0} R={2:0.0} B={3:0.0}  |  Left={4:0.0} Top={5:0.0} Width={6:0.0} 右边距={7:0.0}",
+                l, t, r, b, Left, Top, ActualWidth, r - (Left + ActualWidth));
+        }
+
+        /// <summary>
+        /// 主显示器工作区，换算成 WPF 的 DIP。
+        /// 用 WinForms 的 WorkingArea（物理像素、已排除任务栏）——
+        /// WPF 的 SystemParameters.WorkArea 在「任务栏停靠在顶部/侧边」或
+        /// 多显示器混合 DPI 时会给出错误工作区（实测：顶部任务栏时它仍返回 Top=0，
+        /// 浮窗直接被任务栏压住）。
+        /// </summary>
+        private void GetWorkAreaDip(out double left, out double top, out double right, out double bottom)
+        {
+            var dpi = VisualTreeHelper.GetDpi(this);
+            double sx = dpi.DpiScaleX <= 0 ? 1 : dpi.DpiScaleX;
+            double sy = dpi.DpiScaleY <= 0 ? 1 : dpi.DpiScaleY;
+
+            try
+            {
+                var r = System.Windows.Forms.Screen.PrimaryScreen.WorkingArea;
+                left = r.Left / sx;
+                top = r.Top / sy;
+                right = r.Right / sx;
+                bottom = r.Bottom / sy;
+                return;
+            }
+            catch (Exception) { }
+
+            var wa = SystemParameters.WorkArea;
+            left = wa.Left; top = wa.Top; right = wa.Right; bottom = wa.Bottom;
+        }
+
+        // ==================================================================
+        // 交互
+        // ==================================================================
+
+        private void OnCardMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ClickCount == 2)
+            {
+                var h = SettingsRequested;
+                if (h != null) h(this, EventArgs.Empty);
+                e.Handled = true;
+                return;
+            }
+            if (_settings.LockPosition || _settings.ClickThrough) return;
+
+            _dragging = true;
+            _lastScreenPoint = PointToScreen(e.GetPosition(this));
+            CaptureMouse();
+            e.Handled = true;
+        }
+
+        private void OnCardMouseMove(object sender, MouseEventArgs e)
+        {
+            if (!_dragging) return;
+
+            var cur = PointToScreen(e.GetPosition(this));
+            var dpi = VisualTreeHelper.GetDpi(this);
+            double dx = (cur.X - _lastScreenPoint.X) / dpi.DpiScaleX;
+            double dy = (cur.Y - _lastScreenPoint.Y) / dpi.DpiScaleY;
+
+            Left += dx;
+            Top += dy;
+            _lastScreenPoint = cur;
+        }
+
+        private void OnCardMouseUp(object sender, MouseButtonEventArgs e)
+        {
+            if (!_dragging) return;
+            _dragging = false;
+            ReleaseMouseCapture();
+            e.Handled = true;
+
+            double wl, wt, wr, wb;
+            GetWorkAreaDip(out wl, out wt, out wr, out wb);
+            _settings.OffsetX = Left - (wr - ActualWidth - EdgeRight);
+            _settings.OffsetY = Top - (wt + EdgeTop);
+
+            var h = PositionChanged;
+            if (h != null) h(this, _settings);
+        }
+
+        private void OnCardRightClick(object sender, MouseButtonEventArgs e)
+        {
+            if (_settings.ClickThrough) return;
+            CtxMenu.PlacementTarget = this;
+            CtxMenu.IsOpen = true;
+            e.Handled = true;
+        }
+
+        private void OnMenuSettings(object sender, RoutedEventArgs e)
+        {
+            var h = SettingsRequested;
+            if (h != null) h(this, EventArgs.Empty);
+        }
+
+        private void OnMenuHide(object sender, RoutedEventArgs e)
+        {
+            var h = HideRequested;
+            if (h != null) h(this, EventArgs.Empty);
+        }
+
+        private void OnMenuExit(object sender, RoutedEventArgs e)
+        {
+            var h = ExitRequested;
+            if (h != null) h(this, EventArgs.Empty);
+        }
+
+        private sealed class GroupUi
+        {
+            public StackPanel Root;
+            public OutlineText Label;
+            public OutlineText Value;
+        }
+    }
+
+    internal static class NativeMethods
+    {
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+    }
+}
