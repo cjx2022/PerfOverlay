@@ -9,6 +9,7 @@ obj/
 _shots/
 _tools/
 _test/*.bat
+_test/*.txt
 dist/
 
 # 打包与临时文件
@@ -16,3 +17,6 @@ dist/
 *.7z
 *.log
 *.tmp
+
+# 介绍视频工程（素材/中间产物/成片，体积大，不入库）
+video/

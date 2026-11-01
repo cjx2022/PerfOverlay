@@ -29,6 +29,8 @@ namespace PerfOverlay
         private bool _trayIconOwned;
 
         private DispatcherTimer _saveTimer;
+        private DispatcherTimer _hideTrimTimer;
+        private DateTime _lastTrimUtc = DateTime.MinValue;
         private int _uiPending;
 
         protected override void OnStartup(StartupEventArgs e)
@@ -94,6 +96,15 @@ namespace PerfOverlay
         {
             // --diag：打开常规运行日志（默认关闭，见 LogInfo）
             _diagnostic = HasArg(e.Args, "--diag");
+
+            // --sw：强制软件渲染（必须在建任何 UI 之前设）。用来对比「WPF 走 D3D 时
+            // 会把显卡驱动整包映射进来」到底吃掉多少工作集。
+            if (HasArg(e.Args, "--sw"))
+            {
+                System.Windows.Media.RenderOptions.ProcessRenderMode =
+                    System.Windows.Interop.RenderMode.SoftwareOnly;
+                LogInfo("Render", "软件渲染（--sw）");
+            }
 
             // ---- 自检模式：只采样一次并写报告，不开任何窗口 ----
             if (HasArg(e.Args, "--selftest"))
@@ -167,7 +178,11 @@ namespace PerfOverlay
                     return;
                 }
 
-                string elevArgs = "--startup --takeover --elevated-attempt" + (_diagnostic ? " --diag" : "");
+                string elevArgs = "--startup --takeover --elevated-attempt"
+                                  + (_diagnostic ? " --diag" : "")
+                                  + (HasArg(e.Args, "--mem") ? " --mem" : "")
+                                  + (HasArg(e.Args, "--mem-hide") ? " --mem-hide" : "")
+                                  + (HasArg(e.Args, "--sw") ? " --sw" : "");
                 string elevErr = PrivilegeHelper.RestartElevated(elevArgs);
                 if (elevErr == null)
                 {
@@ -250,6 +265,9 @@ namespace PerfOverlay
             if (HasArg(e.Args, "--open-settings")) ShowSettings(true);
             if (HasArg(e.Args, "--open-menu")) _overlay.OpenMenuAt(320, 160);
 
+            // ---- 内存体检：在真实常驻态下分三次采样，跑完自己退出 ----
+            if (HasArg(e.Args, "--mem")) RunMemProbe();
+
             bool isStartupLaunch = HasArg(e.Args, "--startup") || HasArg(e.Args, "--tray");
             if (!isStartupLaunch)
             {
@@ -262,6 +280,48 @@ namespace PerfOverlay
                 ex.Handled = true;
                 LogError("Dispatcher", ex.Exception);
             };
+        }
+
+        /// <summary>
+        /// 内存体检：常驻态下在 10s / 30s / 60s 各采一次（前两次不打扰进程，
+        /// 最后一次才做强制回收与工作集修剪），结果写 %TEMP%\perfoverlay-mem.txt 后退出。
+        /// </summary>
+        private void RunMemProbe()
+        {
+            string path = Path.Combine(Path.GetTempPath(), "perfoverlay-mem.txt");
+            try { File.Delete(path); } catch (Exception) { }
+
+            // --mem-hide：第一次采样后把浮窗藏起来，用来验证「隐藏即回收」真的跑到
+            bool hideAfterFirst = HasArg(Environment.GetCommandLineArgs(), "--mem-hide");
+            bool wasVisible = _settings == null || _settings.OverlayVisible;
+            var marks = new[] { 10, 30, 60 };
+            int i = 0;
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(marks[0]) };
+            timer.Tick += (s, a) =>
+            {
+                timer.Stop();
+                try
+                {
+                    File.AppendAllText(path, MemProbe.Capture(i == marks.Length - 1), Encoding.UTF8);
+                }
+                catch (Exception) { }
+                i++;
+                if (i == 1 && hideAfterFirst) SetOverlayVisible(false);
+                if (i < marks.Length)
+                {
+                    timer.Interval = TimeSpan.FromSeconds(marks[i] - marks[i - 1]);
+                    timer.Start();
+                    return;
+                }
+                // 探针不能改用户配置：把 OverlayVisible 原样写回去
+                if (hideAfterFirst && _settings != null)
+                {
+                    _settings.OverlayVisible = wasVisible;
+                    SettingsStore.Save(_settings);
+                }
+                Shutdown(0);
+            };
+            timer.Start();
         }
 
         /// <summary>
@@ -665,9 +725,63 @@ namespace PerfOverlay
         private void SetOverlayVisible(bool visible)
         {
             _settings.OverlayVisible = visible;
-            if (visible) _overlay.Show(); else _overlay.Hide();
+            if (visible)
+            {
+                if (_hideTrimTimer != null) _hideTrimTimer.Stop();
+                _overlay.Show();
+            }
+            else
+            {
+                _overlay.Hide();
+                ScheduleHideTrim();
+            }
             if (_tray != null) _miShow.Text = visible ? "隐藏浮窗" : "显示浮窗";
             SettingsStore.Save(_settings);
+        }
+
+        // ==================================================================
+        // 浮窗隐藏后回收一次
+        // ==================================================================
+
+        /// <summary>
+        /// 藏起来之后等 1.5 秒再动手：用户常是「点一下看看、马上又点回来」，
+        /// 立刻回收反而要重新换页。20 秒内的重复隐藏只做一次。
+        /// </summary>
+        private void ScheduleHideTrim()
+        {
+            if (_hideTrimTimer == null)
+            {
+                _hideTrimTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.5) };
+                _hideTrimTimer.Tick += (s, a) => { _hideTrimTimer.Stop(); RunHideTrim(); };
+            }
+            _hideTrimTimer.Stop();
+            _hideTrimTimer.Start();
+        }
+
+        /// <summary>
+        /// 先 GC 再修剪工作集，顺序不能反：不先回收就修剪，等于把还活着的对象一起换出去，
+        /// 下一帧又全读回来。两件事都只在浮窗不可见时做 —— 可见时每秒重绘，
+        /// 修剪会让系统反复换页，越修越卡。
+        /// 实测：WS 90 → 9 MB，Private 只掉那部分真垃圾（81 → 76），不虚报效果。
+        /// </summary>
+        private void RunHideTrim()
+        {
+            if (_settings == null || _settings.OverlayVisible) return;       // 期间又点回来了
+            if ((DateTime.UtcNow - _lastTrimUtc).TotalSeconds < 20) return;  // 反复开关只做一次
+            _lastTrimUtc = DateTime.UtcNow;
+
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    // 阻塞式 Gen2，压缩关掉：LOH 压缩在这点垃圾量上不划算，还慢
+                    GC.Collect(2, GCCollectionMode.Forced, true, false);
+                    GC.WaitForPendingFinalizers();
+                }
+                catch (Exception) { }
+                MemProbe.TrimWorkingSet();
+                LogInfo("Trim", "浮窗已隐藏，完成一次回收 + 工作集修剪");
+            });
         }
 
         // ==================================================================
