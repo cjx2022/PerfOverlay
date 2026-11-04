@@ -90,6 +90,7 @@ namespace PerfOverlay.Views
             ChkLock.IsChecked = _s.LockPosition;
             ChkThrough.IsChecked = _s.ClickThrough;
             ChkTray.IsChecked = _s.ShowTrayIcon;
+            ShowHotkey(_s.Hotkey, false, null);
 
             // 以注册表实际状态为准：用户可能在别处删过启动项
             ChkStartup.IsChecked = StartupHelper.IsEnabled;
@@ -241,6 +242,118 @@ namespace PerfOverlay.Views
             _s.OffsetY = 0;
             var h = ResetPositionRequested;
             if (h != null) h(this, EventArgs.Empty);
+        }
+
+        // ==================================================================
+        // 显示 / 隐藏浮窗的全局热键
+        //
+        // 冲突检测靠系统：RegisterHotKey 失败就是 1409（已被占用），
+        // 不需要自己维护一张「哪些软件用了哪些键」的表 —— 那种表永远不全。
+        // ==================================================================
+
+        private bool _capturingHotkey;
+
+        /// <summary>诊断用：热键框与它当前显示的文字，供布局断言。</summary>
+        public System.Windows.FrameworkElement HotkeyBoxElement { get { return HotkeyBox; } }
+        public string HotkeyText { get { return TxtHotkey.Text; } }
+
+        private static readonly Brush BorderIdle = new SolidColorBrush(Color.FromRgb(0xD3, 0xE2, 0xF7));
+        private static readonly Brush BorderActive = new SolidColorBrush(Color.FromRgb(0x2C, 0x6B, 0xF0));
+        private static readonly Brush BorderError = new SolidColorBrush(Color.FromRgb(0xC0, 0x39, 0x2B));
+
+        private void ShowHotkey(string spec, bool error, string errorText)
+        {
+            if (error)
+            {
+                TxtHotkey.Text = errorText;
+                TxtHotkey.Foreground = BorderError;
+                HotkeyBox.BorderBrush = BorderError;
+                return;
+            }
+
+            HotkeyBox.BorderBrush = BorderIdle;
+            if (string.IsNullOrEmpty(spec))
+            {
+                TxtHotkey.Text = "未设置";
+                TxtHotkey.Foreground = (Brush)FindResource("TextSecondary");
+            }
+            else
+            {
+                TxtHotkey.Text = HotkeyService.Pretty(spec);
+                TxtHotkey.Foreground = (Brush)FindResource("TextPrimary");
+            }
+        }
+
+        private void OnHotkeyBoxClick(object sender, MouseButtonEventArgs e)
+        {
+            if (_loading) return;
+            _capturingHotkey = true;
+            TxtHotkey.Text = "按下组合键…";
+            TxtHotkey.Foreground = (Brush)FindResource("TextSecondary");
+            HotkeyBox.BorderBrush = BorderActive;
+            Keyboard.Focus(HotkeyBox);
+            e.Handled = true;
+        }
+
+        private void OnHotkeyKeyDown(object sender, KeyEventArgs e)
+        {
+            if (!_capturingHotkey) return;
+            e.Handled = true;
+
+            // 按住 Alt 时 WPF 给的是 Key.System，真正的主键在 SystemKey 里
+            Key key = e.Key == Key.System ? e.SystemKey : e.Key;
+
+            if (key == Key.Escape) { EndHotkeyCapture(); return; }
+            if (key == Key.Back || key == Key.Delete) { SetHotkey(""); return; }
+
+            // 只按了修饰键，继续等主键
+            if (!HotkeyService.IsRealKey(key)) return;
+
+            ModifierKeys mods = Keyboard.Modifiers;
+            if (!HotkeyService.IsAcceptable(mods, key))
+            {
+                ShowHotkey(null, true, "要带 Ctrl / Alt / Win");
+                return;
+            }
+
+            SetHotkey(HotkeyService.Format(mods, key));
+        }
+
+        private void OnHotkeyLostFocus(object sender, KeyboardFocusChangedEventArgs e)
+        {
+            // 点到别处就等于放弃这次修改，不要把半截状态留在界面上
+            if (_capturingHotkey) EndHotkeyCapture();
+        }
+
+        private void EndHotkeyCapture()
+        {
+            _capturingHotkey = false;
+            Keyboard.ClearFocus();
+            ShowHotkey(_s.Hotkey, false, null);
+        }
+
+        private void SetHotkey(string spec)
+        {
+            string old = HotkeyService.Current;
+            string err;
+            if (HotkeyService.Apply(spec, out err))
+            {
+                _s.Hotkey = spec;
+                _capturingHotkey = false;
+                Keyboard.ClearFocus();
+                ShowHotkey(spec, false, null);
+                Emit();
+                return;
+            }
+
+            // 注册失败时旧键已经被解掉了，必须抢回来：
+            // 否则用户只是「试一下别的键」，原来能用的热键就没了。
+            if (!string.IsNullOrEmpty(old))
+            {
+                string ignored;
+                HotkeyService.Apply(old, out ignored);
+            }
+            ShowHotkey(null, true, err);
         }
 
         private void OnElevateClick(object sender, RoutedEventArgs e)

@@ -227,13 +227,33 @@
                                   Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
 
                         <!-- 按钮独占一行：和说明文字挤在同一行时，Auto 列会被压缩，
-                             按钮内边距被吃掉，文字看起来就"显示不全"了。 -->
-                        <Button x:Name="BtnReset" Content="浮窗复位到右上角"
-                                Style="{StaticResource GhostButton}" HorizontalAlignment="Left"
-                                Padding="16,7" Margin="0,14,0,0" Click="OnResetPosition" />
+                             按钮内边距被吃掉，文字看起来就"显示不全"了。
+                             热键框放它右侧：点一下进入捕获态，按下组合键即试注册。 -->
+                        <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                            <Button x:Name="BtnReset" Content="浮窗复位到右上角"
+                                    Style="{StaticResource GhostButton}"
+                                    Padding="16,7" Click="OnResetPosition" />
+                            <Border x:Name="HotkeyBox" Width="140" Height="31" Margin="10,0,0,0"
+                                    Background="White" BorderBrush="#FFD3E2F7" BorderThickness="1"
+                                    CornerRadius="6" Cursor="Hand" Focusable="True"
+                                    FocusVisualStyle="{x:Null}"
+                                    VerticalAlignment="Center"
+                                    MouseLeftButtonDown="OnHotkeyBoxClick"
+                                    PreviewKeyDown="OnHotkeyKeyDown"
+                                    LostKeyboardFocus="OnHotkeyLostFocus"
+                                    ToolTip="点一下，然后按下组合键（Esc 取消，退格清除）">
+                                <TextBlock x:Name="TxtHotkey" Text="未设置" FontSize="12"
+                                           Foreground="{StaticResource TextSecondary}"
+                                           TextTrimming="CharacterEllipsis" Margin="6,0"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                        </StackPanel>
+
+                        <TextBlock x:Name="TxtHint" Text="点右侧框后按组合键（Esc 取消，退格清除）；浮窗已显示时再按一次即隐藏。"
+                                   Style="{StaticResource Hint}" Margin="0,8,0,0" TextWrapping="Wrap" />
 
                         <TextBlock Text="关闭本窗口不退出程序，浮窗继续在后台运行。"
-                                   Style="{StaticResource Hint}" Margin="0,8,0,0" />
+                                   Style="{StaticResource Hint}" Margin="0,4,0,0" />
                     </StackPanel>
                 </Border>
 

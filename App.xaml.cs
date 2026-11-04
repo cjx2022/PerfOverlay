@@ -130,6 +130,13 @@ namespace PerfOverlay
                 return;
             }
 
+            // ---- 热键自检：写法解析 + 真实注册 + 占用检测，不开窗口 ----
+            if (HasArg(e.Args, "--hotkey-test"))
+            {
+                RunHotkeyProbe();
+                return;
+            }
+
             // ---- 检查更新自检：不开窗口，把 GitHub 返回与版本比较写进报告 ----
             if (HasArg(e.Args, "--check-update"))
             {
@@ -289,6 +296,7 @@ namespace PerfOverlay
             _saveTimer.Tick += (s, a) => { _saveTimer.Stop(); SettingsStore.Save(_settings); };
 
             InitTray();
+            InitHotkey();
             _host.Start(_settings);
 
             // ---- UI 探针：仅供截图核对，正常启动不走这里（静默：窗口放屏幕外，不抢焦点）----
@@ -436,6 +444,16 @@ namespace PerfOverlay
             bool btnFits = btn.ActualWidth + 0.5 >= btnNeed;
             if (!btnFits) fails++;
 
+            // 热键框与复位按钮同一行并排：最容易出的问题是贴死或顶出卡片右界
+            var hk = w.HotkeyBoxElement;
+            var hkPos = hk.TranslatePoint(new System.Windows.Point(0, 0), w);
+            double btnRight = btn.TranslatePoint(new System.Windows.Point(0, 0), w).X + btn.ActualWidth;
+            double gapHk = hkPos.X - btnRight;
+            double behaviorRight = rects[2].Right - 15.0;   // 卡片左右内边距 15
+            bool hkInside = hkPos.X + hk.ActualWidth <= behaviorRight + 0.5;
+            bool hkGap = gapHk >= 8.0;
+            if (!hkInside || !hkGap) fails++;
+
             // 通用检查（不只盯复位按钮）：任何一个按钮都不许被压窄，也不许越出内容区右边界。
             // 底栏并进右下卡片后，一行里并排两个按钮，最容易在这里悄悄压掉内边距。
             // 容差 1 DIP：1.25 DPI 下 UseLayoutRounding 的量化步长是 0.8 DIP，
@@ -494,6 +512,9 @@ namespace PerfOverlay
             sb.AppendLine(string.Format("   卡片对齐  = {0}", align ? "OK" : "FAIL"));
             sb.AppendLine(string.Format("   复位按钮  = 实测 {0:0.0} / 需要 {1:0.0} DIP => {2}",
                 btn.ActualWidth, btnNeed, btnFits ? "OK（文字放得下）" : "FAIL（被压缩）"));
+            sb.AppendLine(string.Format("   热键框    = x {0:0.0}..{1:0.0} / 卡内容右界 {2:0.0}，与复位按钮间距 {3:0.0} => {4}",
+                hkPos.X, hkPos.X + hk.ActualWidth, behaviorRight, gapHk,
+                (hkInside && hkGap) ? "OK" : "FAIL（越界或贴死）"));
             sb.AppendLine(string.Format("   全部按钮  = {0} 个，压缩 {1} / 越界 {2} => {3}",
                 btnChecked, squeezed, overflow, btnsOk ? "OK" : "FAIL"));
             if (!btnsOk && badBtns.Length > 0) sb.AppendLine("     明细：" + badBtns.ToString().Trim());
@@ -508,6 +529,80 @@ namespace PerfOverlay
             }
             catch (Exception) { }
 
+            Shutdown(fails == 0 ? 0 : 2);
+        }
+
+        /// <summary>
+        /// 热键自检：写法能不能解析、该拒的有没有拒、系统能不能注册、
+        /// 被别人占住时能不能判出冲突（1409）。全程不开窗口。
+        /// </summary>
+        private void RunHotkeyProbe()
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("== 热键自检 ==");
+            int fails = 0;
+
+            string[] good = { "Ctrl+Alt+P", "Ctrl+Shift+F5", "Alt+1", "Ctrl+Alt+Shift+Win+F12" };
+            foreach (var s in good)
+            {
+                uint mods, vk;
+                bool ok = HotkeyService.TryParse(s, out mods, out vk) && vk != 0;
+                if (!ok) fails++;
+                sb.AppendLine("parse  [" + s + "] => " + (ok ? "OK" : "FAIL") + " mods=0x" + mods.ToString("X") + " vk=0x" + vk.ToString("X"));
+            }
+
+            // 没修饰键会抢走全局打字，只有修饰键等于没按键，都必须拒
+            string[] bad = { "P", "Ctrl", "Ctrl+Alt", "Ctrl+NonsenseKey" };            foreach (var s in bad)
+            {
+                uint mods, vk;
+                bool ok = HotkeyService.TryParse(s, out mods, out vk);
+                if (ok) fails++;
+                sb.AppendLine("reject [" + s + "] => " + (ok ? "FAIL（误接受）" : "OK"));
+            }
+
+            // 数字键必须落到 VK '1'(0x31)：Enum.TryParse 对纯数字串是按数值解析，
+            // "1" 会变成 Cancel(0x03)，注册上去就按不动了
+            uint nm, nvk;
+            bool digitOk = HotkeyService.TryParse("Alt+1", out nm, out nvk) && nvk == 0x31;
+            if (!digitOk) fails++;
+            sb.AppendLine("digit  [Alt+1] => vk=0x" + nvk.ToString("X") + (digitOk ? " OK" : " FAIL（应为 0x31）"));
+
+            const string testSpec = "Ctrl+Alt+Shift+F9";   // 挑个没人用的，避免被环境干扰
+
+            int code;
+            bool avail = HotkeyService.ProbeRegister(testSpec, 0x6001, out code);
+            if (!avail) fails++;
+            sb.AppendLine("register [" + testSpec + "] => " + (avail ? "OK" : "FAIL code=" + code));
+
+            // 自己先占住，再换个 id 抢同一个组合：系统必须拒绝并给出 1409
+            bool hold = HotkeyService.ProbeHold(testSpec, 0x6002, out code);
+            if (!hold) fails++;
+            sb.AppendLine("hold     [" + testSpec + "] => " + (hold ? "OK" : "FAIL code=" + code));
+            if (hold)
+            {
+                bool steal = HotkeyService.ProbeHold(testSpec, 0x6003, out code);
+                bool detected = !steal && code == 1409;
+                if (!detected) fails++;
+                sb.AppendLine("conflict [" + testSpec + "] => " + (detected ? "OK（1409 已被占用）" : "FAIL steal=" + steal + " code=" + code));
+                HotkeyService.ProbeRelease(0x6002);
+                HotkeyService.ProbeRelease(0x6003);
+            }
+
+            string err;
+            bool applied = HotkeyService.Apply(testSpec, out err);
+            if (!applied) fails++;
+            sb.AppendLine("apply  => " + (applied ? "OK current=" + HotkeyService.Current : "FAIL " + err));
+
+            bool cleared = HotkeyService.Apply("", out err);
+            if (!cleared) fails++;
+            sb.AppendLine("clear  => " + (cleared ? "OK current=[" + HotkeyService.Current + "]" : "FAIL " + err));
+
+            sb.AppendLine(fails == 0 ? "SUMMARY: ALL PASS" : "SUMMARY: FAIL " + fails);
+            try
+            {
+                File.WriteAllText(Path.Combine(Path.GetTempPath(), "perfoverlay-hotkey.txt"), sb.ToString(), Encoding.UTF8);
+            }
+            catch (Exception) { }
             Shutdown(fails == 0 ? 0 : 2);
         }
 
@@ -749,6 +844,8 @@ namespace PerfOverlay
         private void ApplySettings(AppSettings cfg, bool rebuild)
         {
             if (cfg == null) return;
+            // 热键注册有系统级副作用，只有值真的变了才去动它
+            string oldHotkey = _settings != null ? (_settings.Hotkey ?? "") : "";
             bool rowsChanged = rebuild
                 || cfg.ShowCpu != _settings.ShowCpu || cfg.ShowMemory != _settings.ShowMemory
                 || cfg.ShowFps != _settings.ShowFps || cfg.ShowLowFps != _settings.ShowLowFps
@@ -760,6 +857,9 @@ namespace PerfOverlay
             _settings = cfg;
             _overlay.ApplySettings(cfg, rowsChanged);
             if (_host != null) _host.ApplySettings(cfg);
+
+            if (!string.Equals(oldHotkey, cfg.Hotkey ?? "", StringComparison.OrdinalIgnoreCase))
+                ApplyHotkeyFromSettings();
 
             if (_tray != null) _tray.Visible = cfg.ShowTrayIcon;
 
@@ -818,6 +918,39 @@ namespace PerfOverlay
                 _settingsWin.WindowState = WindowState.Normal;
 
             _settingsWin.Activate();
+        }
+
+        // ==================================================================
+        // 显示 / 隐藏热键
+        // ==================================================================
+
+        /// <summary>
+        /// 把配置里的热键注册上。注册失败不拦启动 —— 组合键可能被后来装的软件占了，
+        /// 那时候浮窗照常能用，只是这个键要用户自己换一个。
+        /// </summary>
+        private void InitHotkey()
+        {
+            HotkeyService.Pressed += ToggleOverlayByHotkey;
+
+            string spec = _settings != null ? _settings.Hotkey : null;
+            if (string.IsNullOrEmpty(spec)) return;
+
+            string err;
+            if (!HotkeyService.Apply(spec, out err))
+                LogInfo("Hotkey", "注册失败（" + spec + "）：" + err);
+        }
+
+        private void ToggleOverlayByHotkey()
+        {
+            SetOverlayVisible(_settings == null || !_settings.OverlayVisible);
+        }
+
+        private void ApplyHotkeyFromSettings()
+        {
+            string spec = _settings != null ? _settings.Hotkey : null;
+            string err;
+            if (!HotkeyService.Apply(spec, out err))
+                LogInfo("Hotkey", "注册失败（" + (spec ?? "") + "）：" + err);
         }
 
         private void SetOverlayVisible(bool visible)
@@ -1038,6 +1171,7 @@ namespace PerfOverlay
         protected override void OnExit(ExitEventArgs e)
         {
             // 正常退出不写日志：一个开机自启的常驻程序没必要在 TEMP 里留痕
+            try { HotkeyService.Dispose(); } catch (Exception) { }
             try { if (_single != null) { _single.ReleaseMutex(); _single.Dispose(); _single = null; } } catch (Exception) { }
             base.OnExit(e);
         }

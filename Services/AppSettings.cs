@@ -44,6 +44,12 @@ namespace PerfOverlay.Services
         /// <summary>是否给文字加描边（关掉后只剩纯色文字）。</summary>
         [DataMember(Order = 20)] public bool ShowOutline = true;
 
+        /// <summary>
+        /// 显示 / 隐藏浮窗的全局热键，形如 "Ctrl+Alt+P"。空串 = 不设。
+        /// 旧配置文件里没有这个字段，反序列化后会是 null，用之前一律判空。
+        /// </summary>
+        [DataMember(Order = 21)] public string Hotkey = "";
+
         /// <summary>可选文字颜色（控制面板上的色块）。</summary>
         public static readonly string[] ColorChoices =
         {
