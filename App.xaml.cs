@@ -306,6 +306,9 @@ namespace PerfOverlay
             // ---- 内存体检：在真实常驻态下分三次采样，跑完自己退出 ----
             if (HasArg(e.Args, "--mem")) RunMemProbe();
 
+            // ---- 位置探针：三档落点是否贴边/居中 ----
+            if (HasArg(e.Args, "--align")) RunAlignProbe(ArgValue(e.Args, "--align"));
+
             bool isStartupLaunch = HasArg(e.Args, "--startup") || HasArg(e.Args, "--tray");
             if (!isStartupLaunch)
             {
@@ -324,6 +327,62 @@ namespace PerfOverlay
         /// 内存体检：常驻态下在 10s / 30s / 60s 各采一次（前两次不打扰进程，
         /// 最后一次才做强制回收与工作集修剪），结果写 %TEMP%\perfoverlay-mem.txt 后退出。
         /// </summary>
+        /// <summary>
+        /// 位置探针：把浮窗贴到 0=左上 / 1=中上 / 2=右上，量出窗口实际落点。
+        /// 只证明「算出来的位置对、没跑到屏幕外」，不证明界面按钮点得动。
+        /// </summary>
+        private void RunAlignProbe(string arg)
+        {
+            int mode;
+            if (!int.TryParse(arg ?? "", out mode) || mode < 0 || mode > 2) mode = 2;
+            string path = Path.Combine(Path.GetTempPath(), "perfoverlay-align.txt");
+            try { File.Delete(path); } catch (Exception) { }
+
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1200) };
+            timer.Tick += (s, a) =>
+            {
+                timer.Stop();
+                var sb = new StringBuilder();
+                try
+                {
+                    _overlay.Show();
+                    _overlay.AlignHorizontal(mode);
+                    _overlay.UpdateLayout();
+
+                    var work = System.Windows.Forms.Screen.PrimaryScreen.WorkingArea;
+                    double dpi = 1.0;
+                    try { dpi = Media.VisualTreeHelper.GetDpi(_overlay).DpiScaleX; } catch (Exception) { }
+                    if (dpi <= 0) dpi = 1.0;
+
+                    double wl = work.Left / dpi, wr = work.Right / dpi;
+                    double left = _overlay.Left, right = left + _overlay.ActualWidth;
+                    double lGap = left - wl, rGap = wr - right;
+
+                    bool inside = left >= wl - 1 && right <= wr + 1;
+                    bool placed = inside;
+                    if (mode == 0) placed = placed && Math.Abs(lGap - Views.OverlayWindow.EdgeRight) <= 2;
+                    if (mode == 2) placed = placed && Math.Abs(rGap - Views.OverlayWindow.EdgeRight) <= 2;
+                    if (mode == 1) placed = placed && Math.Abs(lGap - rGap) <= 2;
+
+                    sb.AppendLine("mode       = " + mode);
+                    sb.AppendLine(string.Format("work       = {0:0.0}..{1:0.0} DIP（DPI {2:0.00}）", wl, wr, dpi));
+                    sb.AppendLine(string.Format("window     = {0:0.0}..{1:0.0}（宽 {2:0.0}）", left, right, _overlay.ActualWidth));
+                    sb.AppendLine(string.Format("gaps       = 左 {0:0.0} / 右 {1:0.0}", lGap, rGap));
+                    sb.AppendLine("in-screen  = " + (inside ? "OK" : "FAIL（跑出工作区）"));
+                    sb.AppendLine("SUMMARY: " + (placed ? "OK" : "FAIL"));
+                }
+                catch (Exception ex)
+                {
+                    sb.AppendLine("EXCEPTION: " + ex.Message);
+                    sb.AppendLine("SUMMARY: FAIL");
+                }
+
+                try { File.WriteAllText(path, sb.ToString(), Encoding.UTF8); } catch (Exception) { }
+                Shutdown(0);
+            };
+            timer.Start();
+        }
+
         private void RunMemProbe()
         {
             string path = Path.Combine(Path.GetTempPath(), "perfoverlay-mem.txt");
@@ -437,22 +496,31 @@ namespace PerfOverlay
             bool align = row1Same && row2Lower && row1Top && row2Top && colsSame && leftEdge && rightEdge;
             if (!align) fails++;
 
-            // 按钮文字必须放得下：实际宽度 ≥ 内容期望宽度（含左右内边距）
-            var btn = w.ResetButton;
-            btn.Measure(new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity));
-            double btnNeed = btn.DesiredSize.Width;
-            bool btnFits = btn.ActualWidth + 0.5 >= btnNeed;
-            if (!btnFits) fails++;
+            // 位置三档：同一行、等宽、文字放得下
+            var posBtns = w.PositionButtons();
+            double posTop = posBtns[0].TranslatePoint(new System.Windows.Point(0, 0), w).Y;
+            bool posSameRow = true, posSameW = true, posFits = true;
+            double posRight = 0;
+            for (int i = 0; i < posBtns.Length; i++)
+            {
+                var b = posBtns[i];
+                var p = b.TranslatePoint(new System.Windows.Point(0, 0), w);
+                if (Math.Abs(p.Y - posTop) > 0.5) posSameRow = false;
+                if (Math.Abs(b.ActualWidth - posBtns[0].ActualWidth) > 1.0) posSameW = false;
+                double needW = b.DesiredSize.Width - b.Margin.Left - b.Margin.Right;
+                if (b.ActualWidth + 0.5 < needW) posFits = false;
+                if (p.X + b.ActualWidth > posRight) posRight = p.X + b.ActualWidth;
+            }
+            if (!posSameRow || !posSameW || !posFits) fails++;
 
-            // 热键框与复位按钮同一行并排：最容易出的问题是贴死或顶出卡片右界
+            // 热键框：与位置按钮组右端对齐、够放长组合、不越卡片右界
             var hk = w.HotkeyBoxElement;
             var hkPos = hk.TranslatePoint(new System.Windows.Point(0, 0), w);
-            double btnRight = btn.TranslatePoint(new System.Windows.Point(0, 0), w).X + btn.ActualWidth;
-            double gapHk = hkPos.X - btnRight;
             double behaviorRight = rects[2].Right - 15.0;   // 卡片左右内边距 15
             bool hkInside = hkPos.X + hk.ActualWidth <= behaviorRight + 0.5;
-            bool hkGap = gapHk >= 8.0;
-            if (!hkInside || !hkGap) fails++;
+            bool hkRightAligned = Math.Abs((hkPos.X + hk.ActualWidth) - posRight) <= 1.0;
+            bool hkWide = hk.ActualWidth >= 120.0;
+            if (!hkInside || !hkRightAligned || !hkWide) fails++;
 
             // 通用检查（不只盯复位按钮）：任何一个按钮都不许被压窄，也不许越出内容区右边界。
             // 底栏并进右下卡片后，一行里并排两个按钮，最容易在这里悄悄压掉内边距。
@@ -510,11 +578,11 @@ namespace PerfOverlay
             sb.AppendLine(string.Format("   左右等宽  = {0}", colsSame ? "OK" : "FAIL"));
             sb.AppendLine(string.Format("   左右外边距相等 = {0}", rightEdge ? "OK" : "FAIL"));
             sb.AppendLine(string.Format("   卡片对齐  = {0}", align ? "OK" : "FAIL"));
-            sb.AppendLine(string.Format("   复位按钮  = 实测 {0:0.0} / 需要 {1:0.0} DIP => {2}",
-                btn.ActualWidth, btnNeed, btnFits ? "OK（文字放得下）" : "FAIL（被压缩）"));
-            sb.AppendLine(string.Format("   热键框    = x {0:0.0}..{1:0.0} / 卡内容右界 {2:0.0}，与复位按钮间距 {3:0.0} => {4}",
-                hkPos.X, hkPos.X + hk.ActualWidth, behaviorRight, gapHk,
-                (hkInside && hkGap) ? "OK" : "FAIL（越界或贴死）"));
+            sb.AppendLine(string.Format("   位置三档  = 同行 {0} / 等宽 {1} / 文字够 {2}（各宽 {3:0.0}）",
+                posSameRow ? "OK" : "FAIL", posSameW ? "OK" : "FAIL", posFits ? "OK" : "FAIL", posBtns[0].ActualWidth));
+            sb.AppendLine(string.Format("   热键框    = x {0:0.0}..{1:0.0} / 按钮组右端 {2:0.0} / 卡右界 {3:0.0} / 宽 {4:0.0} => {5}",
+                hkPos.X, hkPos.X + hk.ActualWidth, posRight, behaviorRight, hk.ActualWidth,
+                (hkInside && hkRightAligned && hkWide) ? "OK" : "FAIL（不对齐或越界）"));
             sb.AppendLine(string.Format("   全部按钮  = {0} 个，压缩 {1} / 越界 {2} => {3}",
                 btnChecked, squeezed, overflow, btnsOk ? "OK" : "FAIL"));
             if (!btnsOk && badBtns.Length > 0) sb.AppendLine("     明细：" + badBtns.ToString().Trim());
@@ -890,17 +958,16 @@ namespace PerfOverlay
             {
                 _settingsWin = new SettingsWindow();
                 _settingsWin.SettingsChanged += (s, cfg) => ApplySettings(cfg, true);
-                _settingsWin.ResetPositionRequested += (s, a) =>
+                _settingsWin.PositionPicked += (s, mode) =>
                 {
-                    _settings.OffsetX = 0;
-                    _settings.OffsetY = 0;
-                    _overlay.ApplySettings(_settings, false);
+                    _overlay.AlignHorizontal(mode);
                     SettingsStore.Save(_settings);
                 };
                 _settingsWin.ExitRequested += (s, a) => ExitApp();
             }
 
             _settingsWin.Bind(_settings);
+            _settingsWin.SetPositionMode(_overlay.CurrentAlignMode());
             _settingsWin.UpdateFrameStatus(_host);
 
             // 静默模式（探针）：不激活、直接放到屏幕外，只给 PrintWindow 抓图用

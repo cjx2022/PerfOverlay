@@ -110,7 +110,7 @@ namespace PerfOverlay.Services
             {
                 int code = Marshal.GetLastWin32Error();
                 if (code == ErrorHotkeyAlreadyRegistered)
-                    error = "这个组合已被其他程序占用";
+                    error = "这个组合已被其他程序占用，请换一个。";
                 else
                     error = "系统拒绝了这个组合（错误码 " + code + "）";
                 return false;

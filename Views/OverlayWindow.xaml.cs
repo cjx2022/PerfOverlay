@@ -346,6 +346,49 @@ namespace PerfOverlay.Views
             Top = top;
         }
 
+        /// <summary>
+        /// 把浮窗横向贴到 0=左上 / 1=中上 / 2=右上。纵向一律回到顶部。
+        /// 位置仍以 OffsetX 表达，「拖动」那条路径不用改。
+        /// </summary>
+        public void AlignHorizontal(int mode)
+        {
+            double w = ActualWidth > 0 ? ActualWidth : Width;
+            if (double.IsNaN(w) || w <= 0) w = DesiredSize.Width;
+            if (double.IsNaN(w) || w <= 0) w = 200;
+
+            double workLeft, workTop, workRight, workBottom;
+            GetWorkAreaDip(out workLeft, out workTop, out workRight, out workBottom);
+
+            double baseLeft = workRight - w - EdgeRight;
+            double target;
+            if (mode == 0) target = workLeft + EdgeRight;
+            else if (mode == 1) target = workLeft + (workRight - workLeft - w) / 2.0;
+            else target = baseLeft;
+
+            _settings.OffsetX = target - baseLeft;
+            _settings.OffsetY = 0;
+            Reposition();
+        }
+
+        /// <summary>当前落在哪一档（0/1/2）；拖到别处就是 -1。容差 3 DIP。</summary>
+        public int CurrentAlignMode()
+        {
+            double w = ActualWidth > 0 ? ActualWidth : Width;
+            if (double.IsNaN(w) || w <= 0) w = DesiredSize.Width;
+            if (double.IsNaN(w) || w <= 0) w = 200;
+
+            double workLeft, workTop, workRight, workBottom;
+            GetWorkAreaDip(out workLeft, out workTop, out workRight, out workBottom);
+
+            double baseLeft = workRight - w - EdgeRight;
+            double left = baseLeft + _settings.OffsetX;
+
+            if (Math.Abs(left - (workLeft + EdgeRight)) <= 3) return 0;
+            if (Math.Abs(left - (workLeft + (workRight - workLeft - w) / 2.0)) <= 3) return 1;
+            if (Math.Abs(left - baseLeft) <= 3) return 2;
+            return -1;
+        }
+
         /// <summary>诊断用：当前 DPI 缩放。</summary>
         public double GetDpiScale()
         {

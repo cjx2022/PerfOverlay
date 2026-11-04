@@ -15,7 +15,8 @@ namespace PerfOverlay.Views
         private bool _allowClose;
 
         public event EventHandler<AppSettings> SettingsChanged;
-        public event EventHandler ResetPositionRequested;
+        /// <summary>0=左上 1=中上 2=右上。参数是选中的档位。</summary>
+        public event EventHandler<int> PositionPicked;
         public event EventHandler ExitRequested;
 
         public SettingsWindow()
@@ -23,8 +24,11 @@ namespace PerfOverlay.Views
             InitializeComponent();
         }
 
-        /// <summary>诊断用：复位按钮，供「文字是否放得下」的断言。</summary>
-        public System.Windows.FrameworkElement ResetButton { get { return BtnReset; } }
+        /// <summary>诊断用：三个位置按钮，供「等宽、不越界」的断言。</summary>
+        public System.Windows.FrameworkElement[] PositionButtons()
+        {
+            return new System.Windows.FrameworkElement[] { PosLeft, PosCenter, PosRight };
+        }
 
         /// <summary>诊断用：四张卡片的实际布局矩形，供「是否对齐」的数值断言。</summary>
         public System.Windows.FrameworkElement[] Cards()
@@ -91,6 +95,7 @@ namespace PerfOverlay.Views
             ChkThrough.IsChecked = _s.ClickThrough;
             ChkTray.IsChecked = _s.ShowTrayIcon;
             ShowHotkey(_s.Hotkey, false, null);
+            SetPositionMode(-1);
 
             // 以注册表实际状态为准：用户可能在别处删过启动项
             ChkStartup.IsChecked = StartupHelper.IsEnabled;
@@ -236,12 +241,21 @@ namespace PerfOverlay.Views
             Emit();
         }
 
-        private void OnResetPosition(object sender, RoutedEventArgs e)
+        /// <summary>把位置档位点亮，-1 = 当前位置不在三档上（用户拖过）。</summary>
+        public void SetPositionMode(int mode)
         {
-            _s.OffsetX = 0;
-            _s.OffsetY = 0;
-            var h = ResetPositionRequested;
-            if (h != null) h(this, EventArgs.Empty);
+            PosLeft.IsChecked = mode == 0;
+            PosCenter.IsChecked = mode == 1;
+            PosRight.IsChecked = mode == 2;
+        }
+
+        private void OnPositionPicked(object sender, RoutedEventArgs e)
+        {
+            if (_loading) return;
+            int mode = sender == PosLeft ? 0 : sender == PosCenter ? 1 : 2;
+            SetPositionMode(mode);
+            var h = PositionPicked;
+            if (h != null) h(this, mode);
         }
 
         // ==================================================================
@@ -312,7 +326,10 @@ namespace PerfOverlay.Views
             ModifierKeys mods = Keyboard.Modifiers;
             if (!HotkeyService.IsAcceptable(mods, key))
             {
-                ShowHotkey(null, true, "要带 Ctrl / Alt / Win");
+                // 纯字母/数字会抢走全局输入，必须带修饰键
+                EndHotkeyCapture();
+                MessageBox.Show(this, "请按住 Ctrl、Alt 或 Win 再按一个键。",
+                                "浮窗显示快捷键", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
@@ -343,6 +360,10 @@ namespace PerfOverlay.Views
                 Keyboard.ClearFocus();
                 ShowHotkey(spec, false, null);
                 Emit();
+                MessageBox.Show(this,
+                    string.IsNullOrEmpty(spec) ? "已清除浮窗显示快捷键。"
+                                               : "已设为 " + HotkeyService.Pretty(spec) + "。",
+                    "浮窗显示快捷键", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
 
@@ -353,7 +374,11 @@ namespace PerfOverlay.Views
                 string ignored;
                 HotkeyService.Apply(old, out ignored);
             }
-            ShowHotkey(null, true, err);
+            _capturingHotkey = false;
+            Keyboard.ClearFocus();
+            ShowHotkey(_s.Hotkey, false, null);
+            MessageBox.Show(this, err, "浮窗显示快捷键",
+                            MessageBoxButton.OK, MessageBoxImage.Warning);
         }
 
         private void OnElevateClick(object sender, RoutedEventArgs e)
