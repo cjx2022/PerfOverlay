@@ -32,6 +32,8 @@ namespace PerfOverlay
         private DispatcherTimer _hideTrimTimer;
         private DateTime _lastTrimUtc = DateTime.MinValue;
         private int _uiPending;
+        // 最近一帧数据。浮窗藏着时不碰 UI，重新显示要立刻回填，否则会空一秒。
+        private MetricsSnapshot _lastSnap;
 
         protected override void OnStartup(StartupEventArgs e)
         {
@@ -270,7 +272,18 @@ namespace PerfOverlay
 
             _overlay.ApplySettings(_settings, true);
 
-            if (_settings.OverlayVisible) _overlay.Show();
+            if (_settings.OverlayVisible)
+            {
+                _overlay.Show();
+            }
+            else
+            {
+                // 上次退出时是「隐藏」：这条启动路径根本不经过 SetOverlayVisible，
+                // 于是回收永远不会被排上 —— 开机自启常驻、浮窗从没露过面，
+                // 工作集就一路涨着不下来（实测 20 → 50 MB）。
+                // 这里补一次，延迟放宽到 5 秒：WPF 与采集引擎这时还在爬。
+                ScheduleHideTrim(5000);
+            }
 
             _saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
             _saveTimer.Tick += (s, a) => { _saveTimer.Stop(); SettingsStore.Save(_settings); };
@@ -714,6 +727,11 @@ namespace PerfOverlay
 
         private void OnMetricsUpdated(object sender, MetricsSnapshot snap)
         {
+            // 浮窗不可见时连 UI 都不该碰：每秒一次格式化 + 改 Text 会持续制造垃圾，
+            // 又没有一帧会被渲染出去。只留最新快照，显示时回填。
+            _lastSnap = snap;
+            if (_settings == null || !_settings.OverlayVisible) return;
+
             // UI 线程跟不上时直接丢弃这一帧，避免 BeginInvoke 排队堆积
             if (Interlocked.Exchange(ref _uiPending, 1) == 1) return;
 
@@ -809,11 +827,16 @@ namespace PerfOverlay
             {
                 if (_hideTrimTimer != null) _hideTrimTimer.Stop();
                 _overlay.Show();
+                // 刚才藏起来时跳过了所有 UI 更新，这里补上最后一帧，别让用户看到一秒空白
+                if (_lastSnap != null)
+                {
+                    try { _overlay.UpdateMetrics(_lastSnap); } catch (Exception) { }
+                }
             }
             else
             {
                 _overlay.Hide();
-                ScheduleHideTrim();
+                ScheduleHideTrim(1500);
             }
             if (_tray != null) _miShow.Text = visible ? "隐藏浮窗" : "显示浮窗";
             SettingsStore.Save(_settings);
@@ -824,17 +847,20 @@ namespace PerfOverlay
         // ==================================================================
 
         /// <summary>
-        /// 藏起来之后等 1.5 秒再动手：用户常是「点一下看看、马上又点回来」，
+        /// 藏起来之后等一会儿再动手：用户常是「点一下看看、马上又点回来」，
         /// 立刻回收反而要重新换页。20 秒内的重复隐藏只做一次。
+        /// delayMs 给启动路径留出余量 —— 开机时 WPF 与采集引擎还在爬起来，
+        /// 过早回收等于把马上就要用的页面换出去。
         /// </summary>
-        private void ScheduleHideTrim()
+        private void ScheduleHideTrim(int delayMs)
         {
             if (_hideTrimTimer == null)
             {
-                _hideTrimTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.5) };
+                _hideTrimTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(delayMs) };
                 _hideTrimTimer.Tick += (s, a) => { _hideTrimTimer.Stop(); RunHideTrim(); };
             }
             _hideTrimTimer.Stop();
+            _hideTrimTimer.Interval = TimeSpan.FromMilliseconds(delayMs);
             _hideTrimTimer.Start();
         }
 
