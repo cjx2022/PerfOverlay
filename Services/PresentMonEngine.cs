@@ -59,6 +59,13 @@ namespace PerfOverlay.Services
 
         private Process _proc;
 
+        // 本次 PresentMon 子进程使用的 ETW 会话名。必须每次启动都不同：
+        // 进程被强杀（RecycleIfStarved / 应用退出）时内核会话不会被回收，
+        // 固定名字下一次启动会撞 0xC0000035（对象名冲突），会话起不来、一帧都收不到，
+        // 而 PresentMon 进程本身还活着，看起来「一切正常」却永远 N/A。
+        // 会话名唯一 + Stop() 里主动清理，两头都不留残留。
+        private string _sessionName = "";
+
         // PID → (swapchain 地址 → 帧队列)
         private readonly Dictionary<int, Dictionary<ulong, FrameQueue>> _queues
             = new Dictionary<int, Dictionary<ulong, FrameQueue>>();
@@ -165,6 +172,7 @@ namespace PerfOverlay.Services
         {
             try
             {
+                _sessionName = "PerfOverlay_" + Guid.NewGuid().ToString("N").Substring(0, 10);
                 var psi = new ProcessStartInfo
                 {
                     FileName = _exePath,
@@ -176,9 +184,11 @@ namespace PerfOverlay.Services
                     // 全部剔除，stdout 只剩表头，队列永远是空的 —— 表现为「提权了也拿不到帧数」。
                     // 这里统计的是 present 率（与主流 FPS 计数器口径一致），所以不剔除。
                     //
-                    // --session_name / --stop_existing_session：避免上次异常退出的会话把新会话顶掉
+                    // 会话名每次唯一：靠 --stop_existing_session 清残留并不可靠（实测清不掉的
+                    // 僵死会话会让之后每次启动都报 0xC0000035，帧数永久 N/A）。
+                    // 残留由 Stop() 里 PresentMon 自带的 --terminate_existing_session 收尾。
                     Arguments = "--output_stdout --no_console_stats --v1_metrics "
-                              + "--session_name PerfOverlayTrace --stop_existing_session --exclude PerfOverlay.exe",
+                              + "--session_name " + _sessionName + " --exclude PerfOverlay.exe",
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
@@ -632,17 +642,49 @@ namespace PerfOverlay.Services
         {
             var p = _proc;
             _proc = null;
-            if (p == null) return;
+            string session = _sessionName;
+            _sessionName = "";
+
+            if (p != null)
+            {
+                try
+                {
+                    if (!p.HasExited)
+                    {
+                        p.Kill();
+                        p.WaitForExit(2000);
+                    }
+                }
+                catch (Exception) { }
+                try { p.Dispose(); } catch (Exception) { }
+            }
+
+            // 强杀不会通知内核回收 ETW 会话。用 PresentMon 自带的开关把本次会话名
+            // 显式停掉（实测能把 logman 里那条残留会话清成「找不到数据收集器集」）。
+            // 不清的话，同名会话残留 + 固定名字 = 下次启动必然 0xC0000035。
+            if (session.Length == 0 || !File.Exists(_exePath)) return;
             try
             {
-                if (!p.HasExited)
+                var psi = new ProcessStartInfo
                 {
-                    p.Kill();
-                    p.WaitForExit(2000);
+                    FileName = _exePath,
+                    Arguments = "--session_name " + session + " --terminate_existing_session --no_csv",
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using (var cleaner = Process.Start(psi))
+                {
+                    if (cleaner != null)
+                    {
+                        cleaner.WaitForExit(1500);
+                        if (!cleaner.HasExited)
+                        {
+                            try { cleaner.Kill(); } catch (Exception) { }
+                        }
+                    }
                 }
             }
             catch (Exception) { }
-            try { p.Dispose(); } catch (Exception) { }
         }
 
         public void Dispose()
