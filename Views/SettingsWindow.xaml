@@ -265,10 +265,14 @@
                     </Border>
 
                     <Grid VerticalAlignment="Bottom">
-                        <TextBlock Text="改动即时生效并自动保存" FontSize="11"
+                        <!-- 这一行挤了三个按钮，左边提示语要跟着收短：
+                             「改动即时生效并自动保存」有 132 DIP 宽，右列只有 353，会让文字钻到按钮底下。 -->
+                        <TextBlock Text="改动自动保存" FontSize="11"
                                    Foreground="{StaticResource TextSecondary}"
                                    VerticalAlignment="Center" />
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button x:Name="BtnAbout" Content="版本与更新" Style="{StaticResource GhostButton}"
+                                    Padding="10,6" Margin="0,0,8,0" Click="OnAboutClick" />
                             <Button x:Name="BtnDefaults" Content="恢复默认" Style="{StaticResource GhostButton}"
                                     Padding="10,6" Margin="0,0,8,0" Click="OnResetDefaults" />
                             <Button x:Name="BtnDone" Content="完成" Style="{StaticResource PrimaryButton}"

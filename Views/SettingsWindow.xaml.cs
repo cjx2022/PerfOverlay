@@ -271,6 +271,14 @@ namespace PerfOverlay.Views
             if (h != null) h(this, d.Clone());
         }
 
+        private void OnAboutClick(object sender, RoutedEventArgs e)
+        {
+            // 模态子窗：版本信息是个「看一眼就走」的小面板，没必要管理多实例。
+            // Owner 指到本窗口，跟随居中；主面板此时不可点，避免把子窗盖到后面找不着。
+            var w = new AboutWindow { Owner = this };
+            w.ShowDialog();
+        }
+
         private void OnTitleBarMouseDown(object sender, MouseButtonEventArgs e)
         {
             if (e.ButtonState == MouseButtonState.Pressed) DragMove();

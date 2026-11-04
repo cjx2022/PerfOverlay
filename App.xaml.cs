@@ -128,6 +128,23 @@ namespace PerfOverlay
                 return;
             }
 
+            // ---- 检查更新自检：不开窗口，把 GitHub 返回与版本比较写进报告 ----
+            if (HasArg(e.Args, "--check-update"))
+            {
+                RunUpdateProbe();
+                return;
+            }
+
+            // ---- 版本窗口探针：开在屏幕外，自动查一次更新并量几何（截图与断言共用）----
+            if (HasArg(e.Args, "--about"))
+            {
+                // --about-hold N：窗口多留 N 秒，方便从外部 PrintWindow 抓图核对
+                int hold = 11;
+                if (!int.TryParse(ArgValue(e.Args, "--about-hold") ?? "", out hold) || hold < 3) hold = 11;
+                RunAboutProbe(hold);
+                return;
+            }
+
             // ---- README 配图：离屏渲染控制面板 + 深/浅背景浮窗并合成 ----
             if (HasArg(e.Args, "--shot"))
             {
@@ -479,6 +496,69 @@ namespace PerfOverlay
             catch (Exception) { }
 
             Shutdown(fails == 0 ? 0 : 2);
+        }
+
+        /// <summary>
+        /// 检查更新自检：不开窗口，把 GitHub 的返回和版本比较写进报告。
+        /// 网络不通时这里应该给出可读原因（超时 / 403 / 连不上），而不是异常堆栈。
+        /// </summary>
+        private void RunUpdateProbe()
+        {
+            var r = UpdateChecker.Check(8000);
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("current   = " + r.Current);
+            sb.AppendLine("latest    = " + (r.Latest == "" ? "(none)" : r.Latest));
+            sb.AppendLine("url       = " + r.Url);
+            sb.AppendLine("failed    = " + r.Failed);
+            sb.AppendLine("error     = " + (r.Error == "" ? "(none)" : r.Error));
+            sb.AppendLine("hasUpdate = " + r.HasUpdate);
+            sb.AppendLine("compare v0.9.3 / 0.9.2  = " + UpdateChecker.Compare("v0.9.3", "0.9.2") + "  (期望 1)");
+            sb.AppendLine("compare v0.9   / 0.9.0  = " + UpdateChecker.Compare("v0.9", "0.9.0") + "  (期望 0)");
+            sb.AppendLine("compare 0.9.2  / 0.9.10 = " + UpdateChecker.Compare("0.9.2", "0.9.10") + "  (期望 -1)");
+            sb.AppendLine("compare 0.9.2  / 0.9.2  = " + UpdateChecker.Compare("0.9.2", "0.9.2") + "  (期望 0)");
+            try
+            {
+                File.WriteAllText(Path.Combine(Path.GetTempPath(), "perfoverlay-update.txt"), sb.ToString(), Encoding.UTF8);
+            }
+            catch (Exception) { }
+            Shutdown(r.Failed ? 2 : 0);
+        }
+
+        /// <summary>
+        /// 版本窗口探针：开在屏幕外（不抢焦点、不闪屏），等自动检查跑完后把
+        /// 几何实测（按钮间距 / 是否压宽 / 文字是否越界）与状态写文件。
+        /// 检查本身最多 8 秒，给 11 秒余量。
+        /// </summary>
+        private void RunAboutProbe(int holdSeconds)
+        {
+            var w = new AboutWindow { ShowActivated = false };
+            w.Show();
+            w.MoveOffscreen();
+
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(holdSeconds) };
+            timer.Tick += (s, a) =>
+            {
+                timer.Stop();
+                string report;
+                try { report = w.GeometryReport(); }
+                catch (Exception ex) { report = "GEOMETRY FAILED: " + ex.Message; }
+
+                bool bad = report.IndexOf("OVERLAP", StringComparison.Ordinal) >= 0
+                        || report.IndexOf("SQUEEZED", StringComparison.Ordinal) >= 0
+                        || report.IndexOf("OVERFLOW", StringComparison.Ordinal) >= 0
+                        || report.IndexOf("FAILED", StringComparison.Ordinal) >= 0;
+                report += bad ? "SUMMARY: FAIL" : "SUMMARY: ALL PASS";
+
+                try
+                {
+                    File.WriteAllText(Path.Combine(Path.GetTempPath(), "perfoverlay-about.txt"), report, Encoding.UTF8);
+                }
+                catch (Exception) { }
+
+                w.Close();
+                Shutdown(bad ? 2 : 0);
+            };
+            timer.Start();
         }
 
         private static int CountVisuals<T>(DependencyObject root) where T : DependencyObject

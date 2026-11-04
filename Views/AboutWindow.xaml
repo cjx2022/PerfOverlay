@@ -1,0 +1,104 @@
+<Window x:Class="PerfOverlay.Views.AboutWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="版本与更新"
+        Width="404"
+        SizeToContent="Height"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Background="{StaticResource PageBg}"
+        FontFamily="{StaticResource UiFont}"
+        UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Ideal">
+
+    <Border BorderBrush="#FFD3E2F7" BorderThickness="1">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <!-- 标题栏：与主控制面板同高同字重，两扇窗叠在一起时不会错位 -->
+            <Grid Grid.Row="0" Height="40" Background="White" MouseLeftButtonDown="OnTitleBarMouseDown">
+                <StackPanel Orientation="Horizontal" Margin="18,0" VerticalAlignment="Center">
+                    <TextBlock Text="版本与更新" FontSize="13.5" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center" />
+                    <TextBlock Text="PerfOverlay" FontSize="11"
+                               Foreground="{StaticResource TextSecondary}"
+                               Margin="8,1,0,0" VerticalAlignment="Center" />
+                </StackPanel>
+
+                <Button x:Name="BtnClose" Width="28" Height="28" HorizontalAlignment="Right"
+                        Margin="0,0,12,0" Background="Transparent" BorderThickness="0"
+                        Cursor="Hand" Click="OnCloseClick" ToolTip="关闭">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="7">
+                                <Path Data="M0,0 L9,9 M9,0 L0,9" Stroke="#FF7E95B3"
+                                      StrokeThickness="1.5" StrokeStartLineCap="Round"
+                                      StrokeEndLineCap="Round"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#FFFDECEC" />
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Button.Template>
+                </Button>
+            </Grid>
+
+            <StackPanel Grid.Row="1" Margin="20,16,20,18">
+                <TextBlock x:Name="TxtVersion" Text="v0.0.0"
+                           FontSize="21" FontWeight="SemiBold"
+                           Foreground="{StaticResource TextPrimary}" />
+
+                <TextBlock Text="单文件免安装 · Windows 10 1809+ / 11 x64 · MIT 许可"
+                           FontSize="11.5" Foreground="{StaticResource TextSecondary}"
+                           TextWrapping="Wrap" Margin="0,6,0,0" />
+
+                <!-- 状态条：检查结果都落在这里，避免弹对话框打断操作 -->
+                <Border Background="#FFF7FAFF" BorderBrush="#FFE2ECFA" BorderThickness="1"
+                        CornerRadius="9" Padding="12,10" Margin="0,14,0,0">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <Ellipse x:Name="DotStatus" Grid.Column="0" Width="8" Height="8"
+                                 Fill="#FFB9C8DA" VerticalAlignment="Top" Margin="0,5,8,0" />
+
+                        <TextBlock x:Name="TxtStatus" Grid.Column="1"
+                                   Text="正在查询 GitHub 上的最新版本…"
+                                   FontSize="12.5" LineHeight="19"
+                                   Foreground="{StaticResource TextPrimary}"
+                                   TextWrapping="Wrap" />
+                    </Grid>
+                </Border>
+
+                <Grid Margin="0,14,0,0">
+                    <Button x:Name="BtnRepo" Content="打开 GitHub" HorizontalAlignment="Left"
+                            Style="{StaticResource GhostButton}" Padding="12,6"
+                            Click="OnOpenRepo" />
+
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button x:Name="BtnDownload" Content="前往下载" Visibility="Collapsed"
+                                Style="{StaticResource GhostButton}" Padding="12,6" Margin="0,0,8,0"
+                                Click="OnOpenDownload" />
+                        <Button x:Name="BtnCheck" Content="检查更新"
+                                Style="{StaticResource PrimaryButton}" Padding="14,6"
+                                Click="OnCheckUpdate" />
+                    </StackPanel>
+                </Grid>
+
+                <TextBlock Text="更新来自 GitHub Releases，本程序不会自动下载或替换文件。"
+                           FontSize="10.5" Foreground="#FF9AAEC6"
+                           TextWrapping="Wrap" Margin="0,12,0,0" />
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>
