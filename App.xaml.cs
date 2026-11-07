@@ -1108,6 +1108,14 @@ namespace PerfOverlay
             if (cfg == null) return;
             // 热键注册有系统级副作用，只有值真的变了才去动它
             string oldHotkey = _settings != null ? (_settings.Hotkey ?? "") : "";
+            // OffsetX/OffsetY 是浮窗的拖动/贴角状态，面板 Bind 时的克隆里不会更新它；
+            // 不带回的话，第二次开关会用 Bind 时的旧偏移覆盖浮窗当前位置，
+            // 既让复位判错档位，又会在存盘时把旧偏移写进 settings.json。
+            if (_settings != null)
+            {
+                cfg.OffsetX = _settings.OffsetX;
+                cfg.OffsetY = _settings.OffsetY;
+            }
             bool rowsChanged = rebuild
                 || cfg.ShowCpu != _settings.ShowCpu || cfg.ShowMemory != _settings.ShowMemory
                 || cfg.ShowFps != _settings.ShowFps || cfg.ShowLowFps != _settings.ShowLowFps

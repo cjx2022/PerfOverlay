@@ -91,17 +91,18 @@ namespace PerfOverlay.Views
 
         public void ApplySettings(AppSettings s, bool rebuildRows)
         {
+            // 档位必须在换配置之前读：OffsetX 按「当前宽度 + 当前偏移」编码，
+            // 读的是浮窗此刻的真实位置。放在 _settings = s 之后读，
+            // 一旦 s 里的偏移是旧值（面板克隆滞后），档位就会判错。
+            // -2 = 启动首次应用（窗口还没加载），不做复位，照常还原保存的位置。
+            int mode = -2;
+            if (rebuildRows && IsLoaded) mode = CurrentAlignMode();
+
             _settings = s;
             Opacity = Math.Max(0.3, Math.Min(1.0, s.Opacity));
 
             if (rebuildRows)
             {
-                // 档位必须在重建前读：OffsetX 是按「当时的宽度」编码的绝对位置，
-                // 重建后宽度一变，左上/中上的判读就会失准、误落到右上兜底。
-                // -2 = 启动首次应用（窗口还没加载），不做复位，照常还原保存的位置。
-                int mode = -2;
-                if (IsLoaded) mode = CurrentAlignMode();
-
                 BuildGroups();
 
                 // 开关显示项 = 行重建 = 宽度变。SizeToContent 固定左上角往右长，
