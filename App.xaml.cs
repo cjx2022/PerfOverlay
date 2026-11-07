@@ -217,6 +217,14 @@ namespace PerfOverlay
                 return;
             }
 
+            // ---- GPU 探针：PDH 占用率 + WDDM 温度（两条路都不需要管理员权限）----
+            if (HasArg(e.Args, "--gpu-probe"))
+            {
+                RunGpuProbe();
+                Shutdown(0);
+                return;
+            }
+
             // ---- 自动提权 ----
             // 帧采集（FPS / 1% Low）要靠 PresentMon 开 ETW 会话，必须管理员权限。
             // 双击 exe 时如果当前不是管理员，就地拉起一个提权实例再退出自己，
@@ -245,7 +253,7 @@ namespace PerfOverlay
                                   + (_diagnostic ? " --diag" : "")
                                   + (HasArg(e.Args, "--mem") ? " --mem" : "")
                                   + (HasArg(e.Args, "--mem-hide") ? " --mem-hide" : "")
-                                  + (HasArg(e.Args, "--lhm-probe") ? " --lhm-probe" : "")
+                                  + ((HasArg(e.Args, "--temp-probe") || HasArg(e.Args, "--lhm-probe")) ? " --temp-probe" : "")
                                   + (HasArg(e.Args, "--sw") ? " --sw" : "");
                 string elevErr = PrivilegeHelper.RestartElevated(elevArgs);
                 if (elevErr == null)
@@ -299,9 +307,9 @@ namespace PerfOverlay
             if (!_settings.FirstRunDone) _settings.FirstRunDone = true;
 
             // ---- 温度探针：列出 LibreHardwareMonitor 能读到的所有温度传感器 ----
-            if (HasArg(e.Args, "--lhm-probe"))
+            if (HasArg(e.Args, "--temp-probe") || HasArg(e.Args, "--lhm-probe"))
             {
-                RunLhmProbe();
+                RunTempProbe();
                 Shutdown(0);
                 return;
             }
@@ -696,79 +704,172 @@ namespace PerfOverlay
         /// 温度探针：把 LibreHardwareMonitor 能读到的每个温度传感器都列出来。
         /// 需要管理员（它要加载内核驱动读 MSR / SMN），所以这条命令会先自提权再执行。
         /// </summary>
-        private void RunLhmProbe()
+        /// <summary>
+        /// CPU 温度探针：只走 ACPI 热区。它不需要管理员、不加载驱动、不需要装任何软件，
+        /// 所以输出里不再有「提权后才读得到」这类前提；读不到就是固件没实现 _TZ。
+        /// </summary>
+        private void RunTempProbe()
         {
             var sb = new System.Text.StringBuilder();
-            sb.AppendLine("== 温度探针 (LibreHardwareMonitorLib) ==");
+            sb.AppendLine("== CPU 温度探针（ACPI 热区，零依赖） ==");
             sb.AppendLine("管理员: " + PrivilegeHelper.IsElevated);
             sb.AppendLine("时间: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+            sb.AppendLine("OS: " + Environment.OSVersion.Version);
+            sb.AppendLine();
 
-            LibreHardwareMonitor.Hardware.Computer c = null;
+            var at = new PerfOverlay.Services.AcpiTempProbe();
             try
             {
-                c = new LibreHardwareMonitor.Hardware.Computer
-                {
-                    IsCpuEnabled = true,
-                    IsGpuEnabled = true,
-                    IsMotherboardEnabled = true,
-                    IsControllerEnabled = false,
-                    IsStorageEnabled = false,
-                    IsMemoryEnabled = false,
-                    IsNetworkEnabled = false
-                };
-                c.Open();
-                sb.AppendLine("Open = OK，硬件 " + c.Hardware.Count + " 个");
+                bool ok = at.Probe();
+                sb.AppendLine("探测结果: " + ok);
+                sb.AppendLine("热区数量: " + at.ZoneCount);
+                sb.AppendLine("状态: " + at.Status);
+                sb.AppendLine("热区名: " + (at.SensorName.Length > 0 ? at.SensorName : "(无)"));
 
-                foreach (var hw in c.Hardware)
+                if (ok)
                 {
-                    hw.Update();
-                    sb.AppendLine(string.Format("[{0}] {1}", hw.HardwareType, hw.Name));
-                    foreach (var s in hw.Sensors)
+                    for (int i = 0; i < 3; i++)
                     {
-                        if (s.SensorType != LibreHardwareMonitor.Hardware.SensorType.Temperature) continue;
-                        sb.AppendLine(string.Format("    温度  {0} = {1}", s.Name,
-                            s.Value.HasValue ? s.Value.Value.ToString("0.0") + " °C" : "(无值)"));
-                    }
-                    foreach (var sub in hw.SubHardware)
-                    {
-                        sub.Update();
-                        sb.AppendLine("  子硬件 [" + sub.HardwareType + "] " + sub.Name);
-                        foreach (var s in sub.Sensors)
-                        {
-                            if (s.SensorType != LibreHardwareMonitor.Hardware.SensorType.Temperature) continue;
-                            sb.AppendLine(string.Format("      温度  {0} = {1}", s.Name,
-                                s.Value.HasValue ? s.Value.Value.ToString("0.0") + " °C" : "(无值)"));
-                        }
+                        double t;
+                        string why;
+                        if (at.TryRead(out t, out why))
+                            sb.AppendLine(string.Format("  读数{0}: {1:0.0} ℃", i + 1, t));
+                        else
+                            sb.AppendLine(string.Format("  读数{0}: 失败 {1}", i + 1, why));
+                        System.Threading.Thread.Sleep(700);
                     }
                 }
-                c.Close();
-                sb.AppendLine("Close = OK");
-                c = null;
-
-                // 再用浮窗实际使用的那个封装走一遍，确认 CT/GT 真的取得到值
-                var probe = new HardwareTempProbe();
-                if (probe.EnsureOpen())
-                {
-                    double tc, tg;
-                    bool cOk, gOk;
-                    probe.TrySample(out tc, out tg, out cOk, out gOk);
-                    sb.AppendLine(string.Format("TrySample: CT={0}  GT={1}",
-                        cOk ? tc.ToString("0.0") + " °C" : "不可读",
-                        gOk ? tg.ToString("0.0") + " °C" : "不可读"));
-                    sb.AppendLine("封装状态: " + probe.Status);
-                }
-                probe.Dispose();
             }
             catch (Exception ex)
             {
                 sb.AppendLine("异常: " + ex.GetType().Name + " " + ex.Message);
-                if (ex.InnerException != null) sb.AppendLine("  内层: " + ex.InnerException.Message);
-                try { if (c != null) c.Close(); } catch (Exception) { }
             }
+            finally { at.Dispose(); }
 
             try
             {
-                File.WriteAllText(Path.Combine(Path.GetTempPath(), "perfoverlay-lhm.txt"),
+                File.WriteAllText(Path.Combine(Path.GetTempPath(), "perfoverlay-temp.txt"),
+                                  sb.ToString(), Encoding.UTF8);
+            }
+            catch (Exception) { }
+        }
+
+        /// <summary>
+        /// GPU 探针：验证 PDH 占用率（任务管理器同源）与 WDDM 温度（免驱动免权限）。
+        /// 两条路都不需要管理员，所以这个分支放在提权判断之前。
+        /// </summary>
+        private void RunGpuProbe()
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("== GPU 探针 ==");
+            sb.AppendLine("管理员: " + PrivilegeHelper.IsElevated);
+            sb.AppendLine("时间: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+            sb.AppendLine(string.Format("OS: {0}", Environment.OSVersion.Version));
+            sb.AppendLine(string.Format("PDH 结构体布局: FMT_COUNTERVALUE={0}B  ITEM_W={1}B（期望 16 / 24）",
+                PerfOverlay.Services.PdhGpuUsage.StructSizeValue,
+                PerfOverlay.Services.PdhGpuUsage.StructSizeItem));
+            sb.AppendLine();
+
+            long luid = 0;
+            string adapter = "";
+            try
+            {
+                var mem = new GpuMemoryProbe();
+                if (mem.Initialize())
+                {
+                    luid = mem.AdapterLuid;
+                    adapter = mem.AdapterName;
+                }
+                sb.AppendLine(string.Format("主显卡: {0}  LUID=0x{1:X16}", adapter, luid));
+                foreach (string line in mem.Trace) sb.AppendLine("  " + line);
+                mem.Dispose();
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine("显存探针异常: " + ex.Message);
+            }
+            sb.AppendLine();
+
+            // ---- PDH 占用率：连采三次，看数值是否随负载变化 ----
+            sb.AppendLine("-- PDH GPU 引擎占用率 --");
+            var pdh = new PerfOverlay.Services.PdhGpuUsage();
+            try
+            {
+                pdh.SetAdapter(luid);
+                if (pdh.EnsureOpen())
+                {
+                    sb.AppendLine("打开 = OK");
+                    for (int i = 0; i < 3; i++)
+                    {
+                        double pct;
+                        if (pdh.TrySample(out pct))
+                            sb.AppendLine(string.Format("  采样{0}: {1:0.0}%   {2}", i + 1, pct, pdh.Detail));
+                        else
+                            sb.AppendLine(string.Format("  采样{0}: 失败  {1}", i + 1, pdh.Status));
+                        System.Threading.Thread.Sleep(1000);
+                    }
+                }
+                else
+                {
+                    sb.AppendLine("打开失败: " + pdh.Status);
+                }
+                sb.AppendLine("引擎数: " + pdh.EngineCount);
+            }
+            catch (Exception ex) { sb.AppendLine("PDH 异常: " + ex.GetType().Name + " " + ex.Message); }
+            finally { pdh.Dispose(); }
+            sb.AppendLine();
+
+            // ---- WDDM 温度 ----
+            sb.AppendLine("-- WDDM 适配器温度（KMTQAITYPE_ADAPTERPERFDATA=62）--");
+            var wddm = new PerfOverlay.Services.WddmGpuTemp();
+            try
+            {
+                if (wddm.Attach(luid))
+                {
+                    double t;
+                    for (int i = 0; i < 2; i++)
+                    {
+                        if (wddm.TryRead(out t)) sb.AppendLine(string.Format("  读数{0}: {1:0.0} ℃   {2}", i + 1, t, wddm.Detail));
+                        else sb.AppendLine(string.Format("  读数{0}: 失败  {1}", i + 1, wddm.Status));
+                        System.Threading.Thread.Sleep(500);
+                    }
+                }
+                else
+                {
+                    sb.AppendLine("不可用: " + wddm.Status);
+                }
+            }
+            catch (Exception ex) { sb.AppendLine("WDDM 异常: " + ex.GetType().Name + " " + ex.Message); }
+            sb.AppendLine();
+
+            // ---- 对照：NVML ----
+            sb.AppendLine("-- 对照 NVML（N 卡驱动自带，已是兜底路径）--");
+            var nv = new NvmlProbe();
+            try
+            {
+                if (nv.EnsureInit())
+                {
+                    double t, u;
+                    bool tOk, uOk;
+                    if (nv.TryRead(out t, out u, out tOk, out uOk))
+                        sb.AppendLine(string.Format("  {0}: 温度={1}  利用率={2}",
+                            nv.DeviceName,
+                            tOk ? t.ToString("0.0") + " ℃" : "不可读",
+                            uOk ? u.ToString("0") + "%" : "不可读"));
+                    else
+                        sb.AppendLine("  读取失败: " + nv.Status);
+                }
+                else
+                {
+                    sb.AppendLine("  不可用: " + nv.Status);
+                }
+            }
+            catch (Exception ex) { sb.AppendLine("  NVML 异常: " + ex.Message); }
+            finally { nv.Dispose(); }
+
+            try
+            {
+                File.WriteAllText(Path.Combine(Path.GetTempPath(), "perfoverlay-gpu.txt"),
                                   sb.ToString(), Encoding.UTF8);
             }
             catch (Exception) { }

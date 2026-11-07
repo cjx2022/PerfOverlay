@@ -58,10 +58,15 @@ namespace PerfOverlay.Services
         public readonly GpuMemoryProbe Gpu = new GpuMemoryProbe();
         public readonly PresentMonEngine Frames;
 
-        // NVML 只在「温度」或「GPU 利用率」开着时才加载，两个开关都关掉就把 dll 也退掉。
+        // GPU 利用率：PDH「GPU Engine」计数器，A/N/I 通用，与任务管理器同源。
+        private PdhGpuUsage _pdhUsage;
+        // GPU 温度：WDDM 适配器性能数据，免驱动免权限，A/N 通用。
+        private WddmGpuTemp _wddmTemp;
+        // NVML 降为兜底：只有上面两条路都失败（或非 Windows 常见显卡）时才去加载 nvml.dll。
         private NvmlProbe _nvml;
-        // CPU 温度要内核驱动（LibreHardwareMonitor），同样只在「温度」开着时才打开。
-        private HardwareTempProbe _temp;
+        private bool _nvmlTried;
+        // CPU 温度：只读 ACPI 热区（系统自带 WMI，零驱动零安装）。
+        private AcpiTempProbe _temp;
 
         private bool _framesStarted;
         private string _framesWhy = "";
@@ -192,35 +197,66 @@ namespace PerfOverlay.Services
         }
 
         /// <summary>
-        /// 按开关管理两个探针的生命周期：
-        /// NVML 管 GPU 利用率 / GPU 温度（dll），LibreHardwareMonitor 管 CPU 温度（内核驱动）。
-        /// 对应开关全关时立刻 Dispose —— 「默认关闭不占内存」不是口号，
+        /// 按开关管理探针生命周期。三个指标各有一条「普适」主路径，全部不依赖厂商 SDK：
+        ///   GPU 利用率 → PDH GPU Engine（任务管理器同源）
+        ///   GPU 温度   → WDDM 适配器性能数据（免驱动免权限）
+        ///   CPU 温度   → ACPI 热区，读不到再上 LHM + PawnIO
+        /// 开关全关时立刻 Dispose —— 「默认关闭不占内存」不是口号，
         /// 关掉后进程里不应该留下 nvml.dll、监控 dll 和它的驱动句柄。
         /// </summary>
         private void EnsureProbes(AppSettings s)
         {
             if (s == null) return;
 
-            if (s.NeedsGpuProbe())
+            // ---- GPU 利用率 ----
+            if (s.ShowGpu)
             {
-                if (_nvml == null) _nvml = new NvmlProbe();
-                _nvml.EnsureInit();
+                if (_pdhUsage == null)
+                {
+                    _pdhUsage = new PdhGpuUsage();
+                    _pdhUsage.SetAdapter(Gpu.AdapterLuid);
+                }
+                _pdhUsage.EnsureOpen();
             }
-            else if (_nvml != null)
+            else if (_pdhUsage != null)
             {
-                _nvml.Dispose();
-                _nvml = null;
+                _pdhUsage.Dispose();
+                _pdhUsage = null;
             }
 
+            // ---- GPU 温度 ----
             if (s.ShowTemp)
             {
-                if (_temp == null) _temp = new HardwareTempProbe();
-                _temp.EnsureOpen();
+                if (_wddmTemp == null)
+                {
+                    _wddmTemp = new WddmGpuTemp();
+                    _wddmTemp.Attach(Gpu.AdapterLuid);
+                }
+            }
+            else if (_wddmTemp != null)
+            {
+                _wddmTemp.Dispose();
+                _wddmTemp = null;
+            }
+
+            // ---- CPU 温度 ----
+            if (s.ShowTemp)
+            {
+                if (_temp == null) _temp = new AcpiTempProbe();
+                _temp.Probe();
             }
             else if (_temp != null)
             {
                 _temp.Dispose();
                 _temp = null;
+            }
+
+            // 两条普适路径都关掉时，NVML 缓存也一并退掉
+            if (!s.ShowGpu && !s.ShowTemp && _nvml != null)
+            {
+                _nvml.Dispose();
+                _nvml = null;
+                _nvmlTried = false;
             }
         }
 
@@ -236,8 +272,12 @@ namespace PerfOverlay.Services
             };
 
             if (s != null && s.ShowClock) snap.ClockText = DateTime.Now.ToString("HH:mm");
-            if (s != null && s.NeedsGpuProbe()) FillNvml(snap);
-            if (s != null && s.ShowTemp) FillHardwareTemp(snap);
+            if (s != null && s.ShowGpu) FillGpuUsage(snap);
+            if (s != null && s.ShowTemp)
+            {
+                FillGpuTemp(snap);
+                FillCpuTemp(snap);
+            }
 
             ulong used, total;
             if (Gpu.TrySample(out used, out total))
@@ -261,30 +301,66 @@ namespace PerfOverlay.Services
             return snap;
         }
 
-        /// <summary>NVML 一次调用同时给温度和利用率，两个开关谁开都要这份数据。</summary>
-        private void FillNvml(MetricsSnapshot snap)
+        /// <summary>
+        /// GPU 利用率：主路 PDH（\GPU Engine，任务管理器同源，A/N/I 通用，取最忙引擎）；
+        /// 只有 PDH 不可用时才退到 NVML（N 卡专有）。
+        /// </summary>
+        private void FillGpuUsage(MetricsSnapshot snap)
         {
-            if (_nvml == null) return;
-
-            double temp, util;
-            bool tempOk, utilOk;
-            if (!_nvml.TryRead(out temp, out util, out tempOk, out utilOk))
+            if (_pdhUsage != null)
             {
-                // 读不到就把原因带到 tooltip 上，别只留一个哑的 N/A
-                string why = _nvml.Status;
-                if (snap.GpuDetail.Length == 0) snap.GpuDetail = why;
-                if (snap.TempGpuDetail.Length == 0) snap.TempGpuDetail = why;
-                return;
+                double pct;
+                if (_pdhUsage.TrySample(out pct))
+                {
+                    snap.GpuOk = true;
+                    snap.GpuPercent = pct;
+                    string card = Gpu.AdapterName;
+                    snap.GpuDetail = (card.Length > 0 ? card + " " : "") + "整体利用率（"
+                                     + (_pdhUsage.Detail.Length > 0 ? _pdhUsage.Detail : "最忙引擎") + "）";
+                    return;
+                }
+
+                snap.GpuDetail = _pdhUsage.Status;
             }
 
-            if (utilOk)
+            // 兜底：NVML
+            double temp, util;
+            bool tempOk, utilOk;
+            if (TryNvml(out temp, out util, out tempOk, out utilOk) && utilOk)
             {
                 snap.GpuOk = true;
                 snap.GpuPercent = util;
-                snap.GpuDetail = (_nvml.DeviceName.Length > 0 ? _nvml.DeviceName + " 整体利用率" : "GPU 整体利用率");
+                snap.GpuDetail = (_nvml.DeviceName.Length > 0 ? _nvml.DeviceName + " 整体利用率（NVML）" : "GPU 整体利用率（NVML）");
+            }
+            else if (snap.GpuDetail.Length == 0)
+            {
+                snap.GpuDetail = "GPU 利用率不可用";
+            }
+        }
+
+        /// <summary>
+        /// GPU 温度：主路 WDDM（KMTQAITYPE_ADAPTERPERFDATA，免驱动免权限，A/N 通用），
+        /// 失败再退 NVML。虚拟机 / 无传感器显卡会两者都失败，原因写进 tooltip。
+        /// </summary>
+        private void FillGpuTemp(MetricsSnapshot snap)
+        {
+            if (_wddmTemp != null)
+            {
+                double t;
+                if (_wddmTemp.TryRead(out t))
+                {
+                    snap.TempGpuOk = true;
+                    snap.TempGpuC = t;
+                    string card = Gpu.AdapterName;
+                    snap.TempGpuDetail = (card.Length > 0 ? card + " " : "") + "核心温度（WDDM）";
+                    return;
+                }
+                snap.TempGpuDetail = _wddmTemp.Status;
             }
 
-            if (tempOk)
+            double temp, util;
+            bool tempOk, utilOk;
+            if (TryNvml(out temp, out util, out tempOk, out utilOk) && tempOk)
             {
                 snap.TempGpuOk = true;
                 snap.TempGpuC = temp;
@@ -292,43 +368,55 @@ namespace PerfOverlay.Services
                     ? _nvml.DeviceName + " 核心温度（NVML）"
                     : "GPU 核心温度（NVML）";
             }
+            else if (snap.TempGpuDetail.Length == 0)
+            {
+                snap.TempGpuDetail = "GPU 温度不可用";
+            }
         }
 
-        /// <summary>CPU 温度只能由 LibreHardwareMonitor 提供；GT 在 NVML 拿不到时由它兜底。</summary>
-        private void FillHardwareTemp(MetricsSnapshot snap)
+        /// <summary>
+        /// CPU 温度：只走 ACPI 热区（root\WMI）。这是唯一「零依赖」的路 ——
+        /// 纯用户态、免管理员、不加载任何驱动，所以既不会被内存完整性拦截，
+        /// 也不需要用户装任何东西。代价是台式机 BIOS 常不实现 _TZ，
+        /// 读不到就诚实显示 N/A 并把原因写进 tooltip。
+        /// </summary>
+        private void FillCpuTemp(MetricsSnapshot snap)
         {
             if (_temp == null) return;
 
-            double cpu, gpu;
-            bool cpuOk, gpuOk;
-            if (!_temp.TrySample(out cpu, out gpu, out cpuOk, out gpuOk))
-            {
-                string why = _temp.Status;
-                if (snap.TempCpuDetail.Length == 0) snap.TempCpuDetail = why;
-                if (snap.TempGpuDetail.Length == 0) snap.TempGpuDetail = why;
-                return;
-            }
-
-            if (cpuOk)
+            double t;
+            string why;
+            if (_temp.TryRead(out t, out why))
             {
                 snap.TempCpuOk = true;
-                snap.TempCpuC = cpu;
-                snap.TempCpuDetail = "CPU 核心温度（" +
-                    (_temp.CpuSensorName.Length > 0 ? _temp.CpuSensorName : "DTS") + "）";
+                snap.TempCpuC = t;
+                snap.TempCpuDetail = "CPU 温度（ACPI 热区"
+                    + (_temp.SensorName.Length > 0 ? "：" + _temp.SensorName : "") + "）";
             }
-            else if (snap.TempCpuDetail.Length == 0 && _temp.Status.Length > 0)
+            else if (snap.TempCpuDetail.Length == 0)
             {
-                snap.TempCpuDetail = _temp.Status;
+                snap.TempCpuDetail = why;
             }
+        }
 
-            // NVML 缺位（非 N 卡 / 驱动不认）时才用 LHM 的 GPU 值
-            if (gpuOk && !snap.TempGpuOk)
+        /// <summary>
+        /// NVML 懒加载：只在 PDH / WDDM 都失败时才碰 nvml.dll，
+        /// 这样 N 卡用户走新路径时进程里根本不会出现这个 dll。
+        /// </summary>
+        private bool TryNvml(out double temp, out double util, out bool tempOk, out bool utilOk)
+        {
+            temp = util = 0;
+            tempOk = utilOk = false;
+
+            if (_nvml == null && !_nvmlTried)
             {
-                snap.TempGpuOk = true;
-                snap.TempGpuC = gpu;
-                snap.TempGpuDetail = "GPU 核心温度（" +
-                    (_temp.GpuSensorName.Length > 0 ? _temp.GpuSensorName : "LHM") + "）";
+                _nvmlTried = true;
+                _nvml = new NvmlProbe();
+                _nvml.EnsureInit();
             }
+            if (_nvml == null) return false;
+
+            return _nvml.TryRead(out temp, out util, out tempOk, out utilOk);
         }
 
         /// <summary>PresentMon 掉了就拉起来，每 5 秒最多试一次（由调用点的 tick 控制）。</summary>
@@ -405,6 +493,8 @@ namespace PerfOverlay.Services
             Stop();
             Frames.Dispose();
             Gpu.Dispose();
+            if (_pdhUsage != null) { _pdhUsage.Dispose(); _pdhUsage = null; }
+            if (_wddmTemp != null) { _wddmTemp.Dispose(); _wddmTemp = null; }
             if (_nvml != null) { _nvml.Dispose(); _nvml = null; }
             if (_temp != null) { _temp.Dispose(); _temp = null; }
         }

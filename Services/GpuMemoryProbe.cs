@@ -42,6 +42,9 @@ namespace PerfOverlay.Services
         public readonly List<string> Trace = new List<string>();
 
         public string AdapterName { get { return _adapterName; } }
+
+        /// <summary>主显卡的 LUID。GPU 引擎计数器与 WDDM 温度查询都靠它定位到同一块卡。</summary>
+        public long AdapterLuid { get { return _adapterLuid; } }
         public ulong DedicatedTotal { get { return _dedicatedTotal; } }
         public string CounterError { get { return _counterError; } }
 

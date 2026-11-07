@@ -149,11 +149,11 @@
                                       Margin="0,0,0,12" Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
                             <CheckBox x:Name="ChkGpu" Grid.Row="2" Grid.Column="2"
                                       Style="{StaticResource Switch}" Content="GPU 使用率"
-                                      ToolTip="整卡利用率（NVIDIA 驱动 NVML）"
+                                      ToolTip="整卡利用率（WDDM 引擎计数器，与任务管理器同源，NVIDIA / AMD / Intel 通用）"
                                       Margin="0,0,0,12" Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
                             <CheckBox x:Name="ChkTemp" Grid.Row="3" Grid.Column="2"
                                       Style="{StaticResource Switch}" Content="温度 CT/GT"
-                                      ToolTip="CT = CPU 温度（需管理员，会加载硬件监控驱动）　GT = GPU 温度"
+                                      ToolTip="CT = CPU 温度（优先 ACPI 热区，免驱动；读不到才需要 PawnIO 驱动）　GT = GPU 温度（WDDM，免驱动，NVIDIA / AMD 通用）"
                                       Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
                         </Grid>
                     </StackPanel>

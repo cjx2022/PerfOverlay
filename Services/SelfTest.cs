@@ -117,12 +117,68 @@ namespace PerfOverlay.Services
             gpu.Dispose();
             w("");
 
-            w("--- GPU 利用率 / 温度 (NVML) ---");
+            // 取主显卡 LUID，下面两条普适路径都靠它定位
+            long mainLuid = 0;
+            string mainCard = "";
+            var mem2 = new GpuMemoryProbe();
+            if (mem2.Initialize()) { mainLuid = mem2.AdapterLuid; mainCard = mem2.AdapterName; }
+            mem2.Dispose();
+            w("主显卡: " + (mainCard.Length > 0 ? mainCard : "(未识别)")
+                + "  LUID=0x" + mainLuid.ToString("X16"));
+            w("");
+
+            w("--- GPU 利用率 (PDH GPU Engine，与任务管理器同源) ---");
+            var pdh = new PdhGpuUsage();
+            pdh.SetAdapter(mainLuid);
+            w("打开: " + pdh.EnsureOpen() + "   状态: " + pdh.Status);
+            if (pdh.Available)
+            {
+                for (int i = 0; i < 2; i++)
+                {
+                    double pct;
+                    bool sOk = pdh.TrySample(out pct);
+                    w(string.Format("  采样{0}: {1}", i + 1,
+                        sOk ? string.Format("{0:0.0}%   {1}", pct, pdh.Detail) : "失败 " + pdh.Status));
+                    System.Threading.Thread.Sleep(600);
+                }
+            }
+            pdh.Dispose();
+            w("");
+
+            w("--- GPU 温度 (WDDM KMTQAITYPE_ADAPTERPERFDATA，免驱动免权限) ---");
+            var wd = new WddmGpuTemp();
+            w("可用: " + wd.Attach(mainLuid));
+            if (wd.Available)
+            {
+                double wt;
+                w("  读数: " + (wd.TryRead(out wt) ? string.Format("{0:0.0} °C", wt) : "失败 " + wd.Status));
+            }
+            else
+            {
+                w("  原因: " + wd.Status);
+            }
+            w("");
+
+            w("--- CPU 温度 (ACPI 热区，零依赖) ---");
+            w("（纯用户态：免管理员、免驱动、免安装；固件不实现 _TZ 时会读不到）");
+            var at = new AcpiTempProbe();
+            w("探测: " + at.Probe() + "   热区数: " + at.ZoneCount);
+            w("状态: " + at.Status);
+            if (at.Available)
+            {
+                double tc;
+                string why;
+                w("读取: CT = " + (at.TryRead(out tc, out why)
+                    ? string.Format("{0:0.0} °C", tc) : "不可读 " + why));
+                w("热区: " + (at.SensorName.Length > 0 ? at.SensorName : "(未命名)"));
+            }
+            at.Dispose();
+            w("");
+
+            w("--- 对照：NVML（仅 NVIDIA，已是兜底路径） ---");
             var nv = new NvmlProbe();
             bool nvOk = nv.EnsureInit();
-            w("初始化: " + nvOk);
-            w("状态: " + nv.Status);
-            w("设备: " + (nv.DeviceName.Length > 0 ? nv.DeviceName : "(未取到)"));
+            w("初始化: " + nvOk + "   状态: " + nv.Status);
             if (nvOk)
             {
                 double nvT, nvU;
@@ -133,25 +189,6 @@ namespace PerfOverlay.Services
                     + "  利用率 = " + (uOk ? string.Format("{0:0.0}%", nvU) : "不可读"));
             }
             nv.Dispose();
-            w("");
-
-            w("--- CPU / GPU 温度 (LibreHardwareMonitor) ---");
-            w("（CPU 温度要内核驱动，需管理员；自检通常非提权，失败属预期）");
-            var tp = new HardwareTempProbe();
-            bool tpOk = tp.EnsureOpen();
-            w("打开: " + tpOk);
-            w("状态: " + tp.Status);
-            w("传感器: CPU=" + (tp.CpuSensorName.Length > 0 ? tp.CpuSensorName : "(无)")
-                        + "  GPU=" + (tp.GpuSensorName.Length > 0 ? tp.GpuSensorName : "(无)"));
-            if (tpOk)
-            {
-                double tc, tg;
-                bool cOk, gOk;
-                tp.TrySample(out tc, out tg, out cOk, out gOk);
-                w("读取: CT = " + (cOk ? string.Format("{0:0.0} °C", tc) : "不可读")
-                    + "  GT = " + (gOk ? string.Format("{0:0.0} °C", tg) : "不可读"));
-            }
-            tp.Dispose();
             w("");
 
             w("--- 帧统计算法自证（1% Low） ---");
