@@ -96,17 +96,19 @@ namespace PerfOverlay.Views
 
             if (rebuildRows)
             {
+                // 档位必须在重建前读：OffsetX 是按「当时的宽度」编码的绝对位置，
+                // 重建后宽度一变，左上/中上的判读就会失准、误落到右上兜底。
+                // -2 = 启动首次应用（窗口还没加载），不做复位，照常还原保存的位置。
+                int mode = -2;
+                if (IsLoaded) mode = CurrentAlignMode();
+
                 BuildGroups();
+
                 // 开关显示项 = 行重建 = 宽度变。SizeToContent 固定左上角往右长，
                 // 贴角的浮窗会被顶出屏幕外。语义上开关等价于「重新点一次当前
                 // 位置按钮」：拖过的自定义位置不保留（档位 -1 时回默认右上）。
-                // 启动首次应用不走这里（窗口还没加载），上次的拖动位置照常还原。
                 UpdateLayout();
-                if (IsLoaded)
-                {
-                    int mode = CurrentAlignMode();
-                    AlignHorizontal(mode < 0 ? 2 : mode);
-                }
+                if (mode > -2) AlignHorizontal(mode < 0 ? 2 : mode);
             }
 
             ApplyWindowStyle();
