@@ -12,11 +12,15 @@ namespace PerfOverlay.Services
     public class AppSettings
     {
         // ---- 显示项 ----
-        [DataMember(Order = 1)] public bool ShowCpu = true;
-        [DataMember(Order = 2)] public bool ShowMemory = true;
+        // 首次启动只开「帧数」两项，其余一律关。理由：这两个是核心诉求，而且
+        // 不需要驱动 / 管理员权限之外的东西就能拿到；CPU、内存、显存这些想看
+        // 自己去设置里勾，浮窗因此默认只占很短一条。
+        // 注意：仅影响「没有配置文件」的首启。反序列化不走初始化器，老配置原样保留。
+        [DataMember(Order = 1)] public bool ShowCpu = false;
+        [DataMember(Order = 2)] public bool ShowMemory = false;
         [DataMember(Order = 3)] public bool ShowFps = true;
         [DataMember(Order = 4)] public bool ShowLowFps = true;
-        [DataMember(Order = 5)] public bool ShowVram = true;
+        [DataMember(Order = 5)] public bool ShowVram = false;
 
         // 0.9.4 新增三项：默认关闭，关闭时连采样器都不初始化（不占资源）。
         // 注意 DataContractJsonSerializer 反序列化不走构造函数，缺字段时取类型默认值 false，

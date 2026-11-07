@@ -55,17 +55,24 @@ namespace PerfOverlay.Services
 
         // ------------------------------------------------------------------
 
-        /// <summary>浮窗：八项指标全开（配图要展示全部能力）、中等字号、默认白字带描边，填一组示例数值。</summary>
+        /// <summary>浮窗：九项指标全开（配图要展示全部能力）、中等字号、默认白字带描边，填一组示例数值。</summary>
         private static Bitmap RenderOverlay()
         {
-            var s = SettingsStore.Load();
-            s.ShowCpu = s.ShowMemory = s.ShowFps = s.ShowLowFps = s.ShowVram = true;
-            s.ShowClock = s.ShowGpu = s.ShowCpuTemp = s.ShowGpuTemp = true;
-            s.SizeMode = "M";
-            s.TextColor = "#FFFFFF";
-            s.ShowOutline = true;
-            s.Opacity = 1.0;
-            s.OffsetX = s.OffsetY = 0;
+            // 同 RenderPanel：不读本机配置，保证图可复现、不带个人痕迹。
+            var s = new AppSettings
+            {
+                ShowCpu = true, ShowMemory = true, ShowFps = true, ShowLowFps = true, ShowVram = true,
+                ShowClock = true, ShowGpu = true, ShowCpuTemp = true, ShowGpuTemp = true,
+                SizeMode = "M",
+                TextColor = "#FFFFFF",
+                ShowLabels = true,
+                ShowOutline = true,
+                Opacity = 1.0,
+                OffsetX = 0,
+                OffsetY = 0,
+                Hotkey = "",
+                FirstRunDone = true
+            };
 
             var w = new OverlayWindow();
             w.ApplySettings(s, true);
@@ -95,12 +102,31 @@ namespace PerfOverlay.Services
         /// <summary>控制面板：与用户实际打开时完全一样的视觉树（显示项全开，配图才看得出两列布局）。</summary>
         private static Bitmap RenderPanel()
         {
-            var s = SettingsStore.Load();
-            s.ShowCpu = s.ShowMemory = s.ShowFps = s.ShowLowFps = s.ShowVram = true;
-            s.ShowClock = s.ShowGpu = s.ShowCpuTemp = s.ShowGpuTemp = true;
+            // 配图必须可复现、且不带任何本机痕迹：刻意从 new AppSettings() 起，
+            // 不读 SettingsStore —— 否则用户的热键（如 Ctrl+F）、开机自启勾选、
+            // 字号档位会跟着进图，既不可复现也等于把本机配置贴到公开仓库里。
+            var s = new AppSettings
+            {
+                ShowCpu = true, ShowMemory = true, ShowFps = true, ShowLowFps = true, ShowVram = true,
+                ShowClock = true, ShowGpu = true, ShowCpuTemp = true, ShowGpuTemp = true,
+                Hotkey = "",
+                StartWithWindows = false,
+                SizeMode = "S",
+                RefreshMs = 1000,
+                TextColor = "#FFFFFF",
+                ShowLabels = true,
+                ShowOutline = true,
+                Opacity = 1.0,
+                LockPosition = false,
+                ClickThrough = false,
+                ShowTrayIcon = true,
+                OverlayVisible = true,
+                FirstRunDone = true
+            };
 
             var w = new SettingsWindow();
             w.Bind(s);
+            w.ApplyShotState(false);   // 自启关、帧采集显示正常态：图可复现且不带本机状态
             w.ShowActivated = false;
             w.Opacity = 0;
             w.MoveOffscreen();

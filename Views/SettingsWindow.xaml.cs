@@ -129,6 +129,21 @@ namespace PerfOverlay.Views
             RefreshPrivilegeUi();
         }
 
+        /// <summary>
+        /// 配图专用：把面板里两处「读系统真实状态」的地方改成固定值 ——
+        /// 开机自启（注册表）与帧数采集（实时探测结果）。否则 README 截图里会带上
+        /// 本机是否已授权、是否已设自启的痕迹，而且每次生成还不一样。
+        /// 只在 ReadmeShot 里调用，正常运行路径不受影响。
+        /// </summary>
+        internal void ApplyShotState(bool startupEnabled)
+        {
+            ChkStartup.IsChecked = startupEnabled;
+
+            DotStatus.Fill = new SolidColorBrush(Color.FromRgb(0x2C, 0xBF, 0x6E));
+            TxtFrameStatus.Text = "采集中（前台窗口）";
+            BtnElevate.Visibility = Visibility.Collapsed;
+        }
+
         public void UpdateFrameStatus(MonitorHost host)
         {
             if (host == null) return;

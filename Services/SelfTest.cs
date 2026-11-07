@@ -13,6 +13,8 @@ namespace PerfOverlay.Services
     /// </summary>
     public static class SelfTest
     {
+        private static string OnOff(bool v) { return v ? "开" : "关"; }
+
         /// <summary>
         /// 用已知序列验证 1% Low 的取值与算法，而不是"看着差不多"。
         /// 口径：最差 1% 帧的「平均帧时间」取倒数。
@@ -83,10 +85,16 @@ namespace PerfOverlay.Services
 
             // 0.9.5 把「温度 CT/GT」拆成两个开关：旧 settings.json 里只有 ShowTemp，
             // 迁移必须在 Load 里完成，否则老用户升级后温度会凭空消失。
-            w("--- 配置（CT / GT 拆分迁移）---");
+            // 同时把九项默认值全打出来：首启方案（只开 FPS / 1% Low）改动容易漏，留一行证据。
+            w("--- 配置（CT / GT 拆分迁移 + 首启默认值）---");
             var cfg = SettingsStore.Load();
             w(string.Format("SchemaVersion={0}  ShowCpuTemp={1}  ShowGpuTemp={2}  （旧字段 ShowTemp={3}）",
                 cfg.SchemaVersion, cfg.ShowCpuTemp, cfg.ShowGpuTemp, cfg.ShowTemp));
+            w(string.Format("显示项: CPU={0} 内存={1} FPS={2} 1%Low={3} 显存={4} GPU={5} CT={6} GT={7} 时间={8}",
+                OnOff(cfg.ShowCpu), OnOff(cfg.ShowMemory), OnOff(cfg.ShowFps), OnOff(cfg.ShowLowFps),
+                OnOff(cfg.ShowVram), OnOff(cfg.ShowGpu), OnOff(cfg.ShowCpuTemp), OnOff(cfg.ShowGpuTemp),
+                OnOff(cfg.ShowClock)));
+            w("配置来源: " + (File.Exists(SettingsStore.FilePath) ? SettingsStore.FilePath : "无配置文件（首启默认值）"));
             w("迁移结论: " + (cfg.SchemaVersion >= 1
                 ? (cfg.ShowCpuTemp || cfg.ShowGpuTemp
                     ? "OK：旧配置里开着的温度已带到 CT/GT 两项"
