@@ -98,11 +98,15 @@ namespace PerfOverlay.Views
             {
                 BuildGroups();
                 // 开关显示项 = 行重建 = 宽度变。SizeToContent 固定左上角往右长，
-                // 贴角的浮窗会被顶出屏幕外。这里同步把布局跑完拿到新宽度，
-                // 再按当前档位执行一次贴角 —— 等于自动替用户点了一下复位按钮。
+                // 贴角的浮窗会被顶出屏幕外。语义上开关等价于「重新点一次当前
+                // 位置按钮」：拖过的自定义位置不保留（档位 -1 时回默认右上）。
+                // 启动首次应用不走这里（窗口还没加载），上次的拖动位置照常还原。
                 UpdateLayout();
-                int mode = CurrentAlignMode();
-                if (mode >= 0) AlignHorizontal(mode);
+                if (IsLoaded)
+                {
+                    int mode = CurrentAlignMode();
+                    AlignHorizontal(mode < 0 ? 2 : mode);
+                }
             }
 
             ApplyWindowStyle();
