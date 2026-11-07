@@ -82,7 +82,8 @@ namespace PerfOverlay.Services
                 VramOk = true, VramPercent = 42, VramUsed = 3UL << 30, VramBudget = 8UL << 30,
                 ClockText = "21:45",
                 GpuOk = true, GpuPercent = 87,
-                TempOk = true, TempCelsius = 64
+                TempCpuOk = true, TempCpuC = 62,
+                TempGpuOk = true, TempGpuC = 71
             });
 
             w.UpdateLayout();           // 数值位数变了，宽度要重排

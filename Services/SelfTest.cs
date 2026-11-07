@@ -135,6 +135,25 @@ namespace PerfOverlay.Services
             nv.Dispose();
             w("");
 
+            w("--- CPU / GPU 温度 (LibreHardwareMonitor) ---");
+            w("（CPU 温度要内核驱动，需管理员；自检通常非提权，失败属预期）");
+            var tp = new HardwareTempProbe();
+            bool tpOk = tp.EnsureOpen();
+            w("打开: " + tpOk);
+            w("状态: " + tp.Status);
+            w("传感器: CPU=" + (tp.CpuSensorName.Length > 0 ? tp.CpuSensorName : "(无)")
+                        + "  GPU=" + (tp.GpuSensorName.Length > 0 ? tp.GpuSensorName : "(无)"));
+            if (tpOk)
+            {
+                double tc, tg;
+                bool cOk, gOk;
+                tp.TrySample(out tc, out tg, out cOk, out gOk);
+                w("读取: CT = " + (cOk ? string.Format("{0:0.0} °C", tc) : "不可读")
+                    + "  GT = " + (gOk ? string.Format("{0:0.0} °C", tg) : "不可读"));
+            }
+            tp.Dispose();
+            w("");
+
             w("--- 帧统计算法自证（1% Low） ---");
             RunLowFpsChecks(w);
             w("");

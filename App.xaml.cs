@@ -35,6 +35,43 @@ namespace PerfOverlay
         // 最近一帧数据。浮窗藏着时不碰 UI，重新显示要立刻回填，否则会空一秒。
         private MetricsSnapshot _lastSnap;
 
+        /// <summary>
+        /// 温度采集要用 LibreHardwareMonitor，它的 dll 与 HidSharp / System.CodeDom
+        /// 都作为资源装在 exe 里（发布物保持单文件）。CLR 找不到程序集时从这里加载 ——
+        /// 静态构造函数的时机早于任何被 JIT 的方法体，所以不会出现「类型解析先于挂接」。
+        /// </summary>
+        static App()
+        {
+            AppDomain.CurrentDomain.AssemblyResolve += ResolveEmbeddedDependency;
+        }
+
+        private static System.Reflection.Assembly ResolveEmbeddedDependency(object sender, ResolveEventArgs e)
+        {
+            try
+            {
+                string file = new System.Reflection.AssemblyName(e.Name).Name + ".dll";
+                string logical = "PerfOverlay.Deps." + file;
+                var asm = System.Reflection.Assembly.GetExecutingAssembly();
+                using (var st = asm.GetManifestResourceStream(logical))
+                {
+                    if (st == null) return null;
+                    var buf = new byte[st.Length];
+                    int read = 0;
+                    while (read < buf.Length)
+                    {
+                        int n = st.Read(buf, read, buf.Length - read);
+                        if (n <= 0) break;
+                        read += n;
+                    }
+                    return System.Reflection.Assembly.Load(buf);
+                }
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
         protected override void OnStartup(StartupEventArgs e)
         {
             base.OnStartup(e);
@@ -208,6 +245,7 @@ namespace PerfOverlay
                                   + (_diagnostic ? " --diag" : "")
                                   + (HasArg(e.Args, "--mem") ? " --mem" : "")
                                   + (HasArg(e.Args, "--mem-hide") ? " --mem-hide" : "")
+                                  + (HasArg(e.Args, "--lhm-probe") ? " --lhm-probe" : "")
                                   + (HasArg(e.Args, "--sw") ? " --sw" : "");
                 string elevErr = PrivilegeHelper.RestartElevated(elevArgs);
                 if (elevErr == null)
@@ -259,6 +297,14 @@ namespace PerfOverlay
 
             _settings = SettingsStore.Load();
             if (!_settings.FirstRunDone) _settings.FirstRunDone = true;
+
+            // ---- 温度探针：列出 LibreHardwareMonitor 能读到的所有温度传感器 ----
+            if (HasArg(e.Args, "--lhm-probe"))
+            {
+                RunLhmProbe();
+                Shutdown(0);
+                return;
+            }
 
             // ---- 托盘菜单探针：只把菜单弹出来备截图，不建浮窗、不启采集 ----
             if (HasArg(e.Args, "--tray-menu"))
@@ -452,6 +498,10 @@ namespace PerfOverlay
 
             var w = new SettingsWindow();
             w.Bind(SettingsStore.Load());
+            // 排版验证必须离屏：Opacity=0 仍会完整跑布局与渲染，量出来的尺寸是真的，
+            // 但屏幕上什么都不会出现 —— 不能为了验个边距把窗口弹到用户眼前。
+            w.Opacity = 0;
+            w.MoveOffscreen();
             w.Show();
             w.UpdateLayout();
 
@@ -642,6 +692,88 @@ namespace PerfOverlay
             Shutdown(fails == 0 ? 0 : 2);
         }
 
+        /// <summary>
+        /// 温度探针：把 LibreHardwareMonitor 能读到的每个温度传感器都列出来。
+        /// 需要管理员（它要加载内核驱动读 MSR / SMN），所以这条命令会先自提权再执行。
+        /// </summary>
+        private void RunLhmProbe()
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("== 温度探针 (LibreHardwareMonitorLib) ==");
+            sb.AppendLine("管理员: " + PrivilegeHelper.IsElevated);
+            sb.AppendLine("时间: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+
+            LibreHardwareMonitor.Hardware.Computer c = null;
+            try
+            {
+                c = new LibreHardwareMonitor.Hardware.Computer
+                {
+                    IsCpuEnabled = true,
+                    IsGpuEnabled = true,
+                    IsMotherboardEnabled = true,
+                    IsControllerEnabled = false,
+                    IsStorageEnabled = false,
+                    IsMemoryEnabled = false,
+                    IsNetworkEnabled = false
+                };
+                c.Open();
+                sb.AppendLine("Open = OK，硬件 " + c.Hardware.Count + " 个");
+
+                foreach (var hw in c.Hardware)
+                {
+                    hw.Update();
+                    sb.AppendLine(string.Format("[{0}] {1}", hw.HardwareType, hw.Name));
+                    foreach (var s in hw.Sensors)
+                    {
+                        if (s.SensorType != LibreHardwareMonitor.Hardware.SensorType.Temperature) continue;
+                        sb.AppendLine(string.Format("    温度  {0} = {1}", s.Name,
+                            s.Value.HasValue ? s.Value.Value.ToString("0.0") + " °C" : "(无值)"));
+                    }
+                    foreach (var sub in hw.SubHardware)
+                    {
+                        sub.Update();
+                        sb.AppendLine("  子硬件 [" + sub.HardwareType + "] " + sub.Name);
+                        foreach (var s in sub.Sensors)
+                        {
+                            if (s.SensorType != LibreHardwareMonitor.Hardware.SensorType.Temperature) continue;
+                            sb.AppendLine(string.Format("      温度  {0} = {1}", s.Name,
+                                s.Value.HasValue ? s.Value.Value.ToString("0.0") + " °C" : "(无值)"));
+                        }
+                    }
+                }
+                c.Close();
+                sb.AppendLine("Close = OK");
+                c = null;
+
+                // 再用浮窗实际使用的那个封装走一遍，确认 CT/GT 真的取得到值
+                var probe = new HardwareTempProbe();
+                if (probe.EnsureOpen())
+                {
+                    double tc, tg;
+                    bool cOk, gOk;
+                    probe.TrySample(out tc, out tg, out cOk, out gOk);
+                    sb.AppendLine(string.Format("TrySample: CT={0}  GT={1}",
+                        cOk ? tc.ToString("0.0") + " °C" : "不可读",
+                        gOk ? tg.ToString("0.0") + " °C" : "不可读"));
+                    sb.AppendLine("封装状态: " + probe.Status);
+                }
+                probe.Dispose();
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine("异常: " + ex.GetType().Name + " " + ex.Message);
+                if (ex.InnerException != null) sb.AppendLine("  内层: " + ex.InnerException.Message);
+                try { if (c != null) c.Close(); } catch (Exception) { }
+            }
+
+            try
+            {
+                File.WriteAllText(Path.Combine(Path.GetTempPath(), "perfoverlay-lhm.txt"),
+                                  sb.ToString(), Encoding.UTF8);
+            }
+            catch (Exception) { }
+        }
+
         /// <summary>诊断用：按 WPF 的排版结果量一段文字的真实宽度（DIP）。</summary>
         private static double TextWidthDip(string text, double fontSize, FontWeight weight)
         {
@@ -767,9 +899,9 @@ namespace PerfOverlay
         /// </summary>
         private void RunAboutProbe(int holdSeconds)
         {
-            var w = new AboutWindow { ShowActivated = false };
+            var w = new AboutWindow { ShowActivated = false, Opacity = 0 };
+            w.MoveOffscreen();          // 先移出屏幕再显示，避免中间闪一帧
             w.Show();
-            w.MoveOffscreen();
 
             var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(holdSeconds) };
             timer.Tick += (s, a) =>
@@ -853,11 +985,13 @@ namespace PerfOverlay
             {
                 var s = SettingsStore.Load();
                 s.ShowCpu = s.ShowMemory = s.ShowFps = s.ShowLowFps = s.ShowVram = true;
+                s.ShowClock = s.ShowGpu = s.ShowTemp = true;   // 全开才量得到最宽的极端情况
                 s.SizeMode = size;
                 s.OffsetX = s.OffsetY = 0;
 
                 var ov = new OverlayWindow();
                 ov.ApplySettings(s, true);
+                ov.Opacity = 0;         // 离屏验证：布局照跑，屏幕上不出现
                 ov.Show();
                 ov.UpdateLayout();
 

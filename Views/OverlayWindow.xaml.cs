@@ -127,10 +127,8 @@ namespace PerfOverlay.Views
 
             // 每一项自带「数值宽度模板」：按该项上限定宽，既防抖动，又不会让
             // "144" 在按 100% 定的格子里右端空出一大截、把组间空隙撑得忽大忽小。
-            // 时间 5 个字符比其它项宽，单独给模板，否则会被裁掉尾部。
-            // 时间排在行首：它是最"外部"的信息，插在性能指标中间反而打断阅读。
+            // 时间不在这张表里：它固定排在最右、不带标签，见下面的 AddClockGroup。
             var items = new List<string[]>();
-            if (_settings.ShowClock) items.Add(new[] { "time", "TIME", "88:88" });
             if (_settings.ShowFps) items.Add(new[] { "fps", "FPS", "888" });
             // 标签文案：low(1%) 比裸 LOW 更说清口径
             if (_settings.ShowLowFps) items.Add(new[] { "low", "low(1%)", "888" });
@@ -138,11 +136,15 @@ namespace PerfOverlay.Views
             if (_settings.ShowMemory) items.Add(new[] { "mem", "MEM", "100%" });
             if (_settings.ShowVram) items.Add(new[] { "vram", "VRAM", "100%" });
             if (_settings.ShowGpu) items.Add(new[] { "gpu", "GPU", "100%" });
-            if (_settings.ShowTemp) items.Add(new[] { "temp", "TEMP", "100°" });
+            // CT = CPU 温度，GT = GPU 温度：两个字足够表意，又不占宽度
+            if (_settings.ShowTemp) items.Add(new[] { "ct", "CT", "100°" });
+            if (_settings.ShowTemp) items.Add(new[] { "gt", "GT", "100°" });
 
+            bool clockShown = _settings.ShowClock;
             for (int i = 0; i < items.Count; i++)
             {
-                bool isLast = i == items.Count - 1;
+                // 后面还跟着时间块时，最后一项也要留组间距，否则竖条会贴到数值上
+                bool isLast = i == items.Count - 1 && !clockShown;
                 double labelW = Math.Ceiling(TextWidth(items[i][1], fs, FontWeights.Normal)) + strokeW;
                 double cellW = Math.Ceiling(TextWidth(items[i][2], fs, FontWeights.SemiBold)) + strokeW;
                 if (cellW < valueW * 0.8) cellW = valueW * 0.8;   // 太窄的格子读起来像漏字
@@ -150,6 +152,58 @@ namespace PerfOverlay.Views
                          labelGap, isLast ? 0 : groupGap, strokeW,
                          labelBrush, valueBrush, outlineBrush);
             }
+
+            if (clockShown)
+            {
+                double clockW = Math.Ceiling(TextWidth("88:88", fs, FontWeights.SemiBold)) + strokeW;
+                AddClockGroup(fs, clockW, groupGap, strokeW, valueBrush, outlineBrush, labelBrush);
+            }
+        }
+
+        /// <summary>
+        /// 时间块：固定最右、不带标签，靠前面一条小竖条和性能指标隔开。
+        /// 竖条用直角 Border 而不是画一个 "|" 字符 —— 字符会被描边一起加粗，
+        /// 宽窄还受字体影响；1.5 DIP 的矩形在三档字号下都是同一根细线。
+        /// </summary>
+        private void AddClockGroup(double fs, double cellW, double gapBefore, double strokeW,
+                                   Brush valueBrush, Brush outlineBrush, Brush barBrush)
+        {
+            var root = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
+            var bar = new Border
+            {
+                Width = 1.5,
+                Height = Math.Round(fs * 0.82),
+                Background = barBrush,
+                Opacity = 0.85,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(gapBefore, 0, Math.Round(fs * 0.42), 0)
+            };
+
+            var val = new OutlineText
+            {
+                Text = "N/A",
+                FontSize = fs,
+                FontWeight = FontWeights.SemiBold,
+                Fill = valueBrush,
+                Outline = outlineBrush,
+                OutlineWidth = strokeW,
+                TextAlignment = TextAlignment.Left,
+                Width = cellW,
+                VerticalAlignment = VerticalAlignment.Bottom,
+                Margin = new Thickness(0, 0, 0, 2),
+                IsHitTestVisible = false
+            };
+
+            root.Children.Add(bar);
+            root.Children.Add(val);
+            RowsHost.Children.Add(root);
+
+            _groups["time"] = new GroupUi { Root = root, Label = null, Value = val };
         }
 
         private static double StrokeWidth(double fs)
@@ -308,9 +362,15 @@ namespace PerfOverlay.Views
                             : (string.IsNullOrEmpty(s.GpuDetail) ? "GPU 利用率不可用" : s.GpuDetail));
 
             if (_settings.ShowTemp)
-                Set("temp", s.TempOk ? FormatTemp(s.TempCelsius) : null,
-                    s.TempOk ? s.TempDetail
-                             : (string.IsNullOrEmpty(s.TempDetail) ? "温度不可用" : s.TempDetail));
+            {
+                // CT = CPU 温度；读不到就把原因挂在 tooltip 上，别只留一个哑的 N/A
+                Set("ct", s.TempCpuOk ? FormatTemp(s.TempCpuC) : null,
+                    s.TempCpuOk ? s.TempCpuDetail
+                                : (string.IsNullOrEmpty(s.TempCpuDetail) ? "CPU 温度不可用" : s.TempCpuDetail));
+                Set("gt", s.TempGpuOk ? FormatTemp(s.TempGpuC) : null,
+                    s.TempGpuOk ? s.TempGpuDetail
+                                : (string.IsNullOrEmpty(s.TempGpuDetail) ? "GPU 温度不可用" : s.TempGpuDetail));
+            }
         }
 
         private static string FormatTemp(double celsius)

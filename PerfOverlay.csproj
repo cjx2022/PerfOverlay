@@ -35,6 +35,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- GeneratePathProperty：把包的实际解包路径暴露成 $(Pkg<Name>) 变量，
+         下面才能把 dll 内嵌进 exe（发布物保持单文件） -->
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.4" GeneratePathProperty="true" />
+    <PackageReference Include="HidSharp" Version="2.1.0" GeneratePathProperty="true" />
+    <PackageReference Include="System.CodeDom" Version="9.0.0" GeneratePathProperty="true" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" />
   </ItemGroup>
 
@@ -58,6 +63,20 @@
   -->
   <ItemGroup>
     <EmbeddedResource Include="tools\PresentMon.exe" LogicalName="PerfOverlay.PresentMon.exe" />
+  </ItemGroup>
+
+  <!--
+    温度采集要读 CPU 的 MSR / SMN，只能靠 LibreHardwareMonitor（它自带已签名的内核驱动）。
+    这三个 dll 同样内嵌进 exe，发布物才还是一个文件；运行时由 App 的 AssemblyResolve
+    从资源里加载 —— 只有用户真的打开「温度」才会走到那一步，平时连内存都不占。
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="$(PkgLibreHardwareMonitorLib)\lib\net472\LibreHardwareMonitorLib.dll"
+                      LogicalName="PerfOverlay.Deps.LibreHardwareMonitorLib.dll" />
+    <EmbeddedResource Include="$(PkgHidSharp)\lib\netstandard2.0\HidSharp.dll"
+                      LogicalName="PerfOverlay.Deps.HidSharp.dll" />
+    <EmbeddedResource Include="$(PkgSystem_CodeDom)\lib\netstandard2.0\System.CodeDom.dll"
+                      LogicalName="PerfOverlay.Deps.System.CodeDom.dll" />
   </ItemGroup>
 
 </Project>

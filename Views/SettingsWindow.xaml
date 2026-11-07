@@ -145,15 +145,15 @@
                                       Margin="0,0,0,12" Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
                             <CheckBox x:Name="ChkClock" Grid.Row="1" Grid.Column="2"
                                       Style="{StaticResource Switch}" Content="时间"
-                                      ToolTip="时:分"
+                                      ToolTip="时:分，固定显示在最右，前面用一条竖线与指标隔开"
                                       Margin="0,0,0,12" Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
                             <CheckBox x:Name="ChkGpu" Grid.Row="2" Grid.Column="2"
                                       Style="{StaticResource Switch}" Content="GPU 使用率"
                                       ToolTip="整卡利用率（NVIDIA 驱动 NVML）"
                                       Margin="0,0,0,12" Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
                             <CheckBox x:Name="ChkTemp" Grid.Row="3" Grid.Column="2"
-                                      Style="{StaticResource Switch}" Content="温度（GPU）"
-                                      ToolTip="显卡核心温度（NVIDIA 驱动 NVML）"
+                                      Style="{StaticResource Switch}" Content="温度 CT/GT"
+                                      ToolTip="CT = CPU 温度（需管理员，会加载硬件监控驱动）　GT = GPU 温度"
                                       Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
                         </Grid>
                     </StackPanel>

@@ -30,11 +30,17 @@ namespace PerfOverlay.Services
         public string ClockText = "";
         public double GpuPercent;
         public bool GpuOk;
-        public double TempCelsius;
-        public bool TempOk;
-        /// <summary>温度项的 tooltip：说明这一格是哪个传感器、为什么别的不显示。</summary>
-        public string TempDetail = "";
         public string GpuDetail = "";
+
+        /// <summary>CT = CPU 温度（LibreHardwareMonitor 读 DTS）。</summary>
+        public double TempCpuC;
+        public bool TempCpuOk;
+        public string TempCpuDetail = "";
+
+        /// <summary>GT = GPU 温度（优先 NVML，读不到再用 LibreHardwareMonitor 的 GPU Core）。</summary>
+        public double TempGpuC;
+        public bool TempGpuOk;
+        public string TempGpuDetail = "";
     }
 
     /// <summary>
@@ -54,6 +60,8 @@ namespace PerfOverlay.Services
 
         // NVML 只在「温度」或「GPU 利用率」开着时才加载，两个开关都关掉就把 dll 也退掉。
         private NvmlProbe _nvml;
+        // CPU 温度要内核驱动（LibreHardwareMonitor），同样只在「温度」开着时才打开。
+        private HardwareTempProbe _temp;
 
         private bool _framesStarted;
         private string _framesWhy = "";
@@ -155,7 +163,7 @@ namespace PerfOverlay.Services
                     if (tick % 20 == 0) Frames.SweepQueues();
 
                     // 温度 / GPU 利用率：开关关着就什么都不做（连 dll 都不加载）
-                    EnsureGpuProbe(s);
+                    EnsureProbes(s);
 
                     // PresentMon 进程必须能自愈：它可能因为会话被顶掉、被外部杀掉、
                     // 或启动瞬间失败而消失。原来的实现只在 Start() 里拉一次，
@@ -184,26 +192,36 @@ namespace PerfOverlay.Services
         }
 
         /// <summary>
-        /// 按开关管理 NVML 生命周期：开任一（温度/GPU 利用率）才加载，
-        /// 两个都关就 Dispose 把 dll 退掉 —— 「默认关闭不占内存」不是口号，
-        /// 关掉后进程里不应该留下 nvml.dll 和它的显存句柄。
+        /// 按开关管理两个探针的生命周期：
+        /// NVML 管 GPU 利用率 / GPU 温度（dll），LibreHardwareMonitor 管 CPU 温度（内核驱动）。
+        /// 对应开关全关时立刻 Dispose —— 「默认关闭不占内存」不是口号，
+        /// 关掉后进程里不应该留下 nvml.dll、监控 dll 和它的驱动句柄。
         /// </summary>
-        private void EnsureGpuProbe(AppSettings s)
+        private void EnsureProbes(AppSettings s)
         {
             if (s == null) return;
 
-            if (!s.NeedsGpuProbe())
+            if (s.NeedsGpuProbe())
             {
-                if (_nvml != null)
-                {
-                    _nvml.Dispose();
-                    _nvml = null;
-                }
-                return;
+                if (_nvml == null) _nvml = new NvmlProbe();
+                _nvml.EnsureInit();
+            }
+            else if (_nvml != null)
+            {
+                _nvml.Dispose();
+                _nvml = null;
             }
 
-            if (_nvml == null) _nvml = new NvmlProbe();
-            _nvml.EnsureInit();
+            if (s.ShowTemp)
+            {
+                if (_temp == null) _temp = new HardwareTempProbe();
+                _temp.EnsureOpen();
+            }
+            else if (_temp != null)
+            {
+                _temp.Dispose();
+                _temp = null;
+            }
         }
 
         private MetricsSnapshot Build(AppSettings s)
@@ -219,6 +237,7 @@ namespace PerfOverlay.Services
 
             if (s != null && s.ShowClock) snap.ClockText = DateTime.Now.ToString("HH:mm");
             if (s != null && s.NeedsGpuProbe()) FillNvml(snap);
+            if (s != null && s.ShowTemp) FillHardwareTemp(snap);
 
             ulong used, total;
             if (Gpu.TrySample(out used, out total))
@@ -253,8 +272,8 @@ namespace PerfOverlay.Services
             {
                 // 读不到就把原因带到 tooltip 上，别只留一个哑的 N/A
                 string why = _nvml.Status;
-                snap.GpuDetail = why;
-                snap.TempDetail = why;
+                if (snap.GpuDetail.Length == 0) snap.GpuDetail = why;
+                if (snap.TempGpuDetail.Length == 0) snap.TempGpuDetail = why;
                 return;
             }
 
@@ -267,9 +286,48 @@ namespace PerfOverlay.Services
 
             if (tempOk)
             {
-                snap.TempOk = true;
-                snap.TempCelsius = temp;
-                snap.TempDetail = (_nvml.DeviceName.Length > 0 ? _nvml.DeviceName + " 核心温度" : "GPU 核心温度");
+                snap.TempGpuOk = true;
+                snap.TempGpuC = temp;
+                snap.TempGpuDetail = _nvml.DeviceName.Length > 0
+                    ? _nvml.DeviceName + " 核心温度（NVML）"
+                    : "GPU 核心温度（NVML）";
+            }
+        }
+
+        /// <summary>CPU 温度只能由 LibreHardwareMonitor 提供；GT 在 NVML 拿不到时由它兜底。</summary>
+        private void FillHardwareTemp(MetricsSnapshot snap)
+        {
+            if (_temp == null) return;
+
+            double cpu, gpu;
+            bool cpuOk, gpuOk;
+            if (!_temp.TrySample(out cpu, out gpu, out cpuOk, out gpuOk))
+            {
+                string why = _temp.Status;
+                if (snap.TempCpuDetail.Length == 0) snap.TempCpuDetail = why;
+                if (snap.TempGpuDetail.Length == 0) snap.TempGpuDetail = why;
+                return;
+            }
+
+            if (cpuOk)
+            {
+                snap.TempCpuOk = true;
+                snap.TempCpuC = cpu;
+                snap.TempCpuDetail = "CPU 核心温度（" +
+                    (_temp.CpuSensorName.Length > 0 ? _temp.CpuSensorName : "DTS") + "）";
+            }
+            else if (snap.TempCpuDetail.Length == 0 && _temp.Status.Length > 0)
+            {
+                snap.TempCpuDetail = _temp.Status;
+            }
+
+            // NVML 缺位（非 N 卡 / 驱动不认）时才用 LHM 的 GPU 值
+            if (gpuOk && !snap.TempGpuOk)
+            {
+                snap.TempGpuOk = true;
+                snap.TempGpuC = gpu;
+                snap.TempGpuDetail = "GPU 核心温度（" +
+                    (_temp.GpuSensorName.Length > 0 ? _temp.GpuSensorName : "LHM") + "）";
             }
         }
 
@@ -348,6 +406,7 @@ namespace PerfOverlay.Services
             Frames.Dispose();
             Gpu.Dispose();
             if (_nvml != null) { _nvml.Dispose(); _nvml = null; }
+            if (_temp != null) { _temp.Dispose(); _temp = null; }
         }
 
         /// <summary>
