@@ -186,7 +186,8 @@ namespace PerfOverlay.Views
             string err = PawnIoInstaller.Install(path);
             if (err != null)
             {
-                Fail("安装未完成：" + err);
+                // err 自带「安装未生效：…（诊断：…）」这类完整描述，不要再加前缀
+                Fail(err);
                 return;
             }
 

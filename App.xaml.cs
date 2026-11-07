@@ -975,7 +975,13 @@ namespace PerfOverlay
 
             sb.AppendLine();
             sb.AppendLine("-- 3. 静默安装（-install -silent，UAC 由安装器自己请求）--");
-            string err = PerfOverlay.Services.PawnIoInstaller.Install(path);
+            var trace = new System.Text.StringBuilder();
+            string err = PerfOverlay.Services.PawnIoInstaller.Install(path, trace);
+            if (trace.Length > 0)
+            {
+                foreach (var line in trace.ToString().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                    sb.AppendLine("  | " + line);
+            }
             sb.AppendLine("  " + (err == null ? "成功" : "失败: " + err));
 
             sb.AppendLine();

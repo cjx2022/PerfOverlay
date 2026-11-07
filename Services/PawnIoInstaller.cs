@@ -208,20 +208,224 @@ namespace PerfOverlay.Services
         }
 
         // ==================================================================
+        // 残留清理（「装过 → 卸载过 → 再装」的唯一坑）
+        // ==================================================================
+        //
+        // 实测现场（setupapi.dev.log，2026-11-07 21:42）：
+        //   ndv: Driver package '...\DriverStore\FileRepository\pawnio.inf_amd64_xxx\pawnio.inf'
+        //        is already imported.
+        //   sto: Driver package already imported as 'oem53.inf'.
+        //   inf: Failed to query service configuration. Error = 0x00000002
+        //   ndv: Failed to install device instance 'ROOT\PAWNIO\0000'. Error = 0x00000002
+        // 原因：官方卸载器把 .sys 与服务键删了，却把导入的驱动包**留在 DriverStore**。
+        // 再跑 -install 时 setup 一看包已导入就跳过导入，直接装设备 —— 而包里那份
+        // 服务所需的文件落不到位，AddService 直接 0x2。整个过程是 -silent，用户的
+        // 观感就是「点一下立刻说没装上」。
+        //
+        // 解法：装之前把这块残留拆掉（删服务键 + pnputil 删包），逼 setup 走一遍
+        // 「首次安装」路径 —— 那条路实测是通的。只有「包在、服务不在」才触发，
+        // 正常机器和已装好的机器都不会被碰。
+
+        /// <summary>DriverStore 里是否已导入 PawnIO 驱动包。</summary>
+        public static bool HasStorePackage()
+        {
+            try
+            {
+                string repo = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                    @"System32\DriverStore\FileRepository");
+                if (!Directory.Exists(repo)) return false;
+
+                foreach (var d in Directory.GetDirectories(repo, "pawnio.inf_*"))
+                    return true;
+            }
+            catch (Exception) { }
+            return false;
+        }
+
+        /// <summary>
+        /// 是否是「装过又卸过」的残留状态：DriverStore 有包，但服务用不起来。
+        /// 全新机器（没包）和已装好的机器（服务在）都不算。
+        /// </summary>
+        public static bool HasStaleState()
+        {
+            return HasStorePackage() && !IsServiceRegistered();
+        }
+
+        /// <summary>
+        /// 是否是「装得不完整」：包在，但设备实例或服务缺一半。
+        /// 官方卸载器留下的就是这种（删设备、删 .sys，服务键与驱动包都留着）。
+        /// 这种状态直接重装通常也能成，但先清干净更稳 —— 代价只是多一秒。
+        /// </summary>
+        public static bool HasPartialState()
+        {
+            return HasStorePackage()
+                   && (!IsServiceRegistered() || !PawnIoBridge.DeviceInstancePresent());
+        }
+
+        /// <summary>在 %windir%\INF 里找出 PawnIO 对应的 oemXX.inf（pnputil 认这个名字）。</summary>
+        private static string FindOemInf()
+        {
+            try
+            {
+                string inf = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.Windows), "INF");
+                if (!Directory.Exists(inf)) return null;
+
+                foreach (var f in Directory.GetFiles(inf, "oem*.inf"))
+                {
+                    try
+                    {
+                        // 驱动 INF 只有 1~2 KB，直接读全文最稳（不依赖 pnputil 的本地化输出）
+                        string text = File.ReadAllText(f);
+                        if (text.IndexOf("PawnIO", StringComparison.OrdinalIgnoreCase) >= 0
+                            && text.IndexOf("namazso", StringComparison.OrdinalIgnoreCase) >= 0)
+                            return Path.GetFileName(f);
+                    }
+                    catch (Exception) { }
+                }
+            }
+            catch (Exception) { }
+            return null;
+        }
+
+        /// <summary>
+        /// 拆掉残留：删服务键 → pnputil 删驱动包（含设备实例）。
+        /// 返回 null 表示清干净了（或本来就没残留），否则返回失败原因。
+        /// 需要管理员：写 SCM/DriverStore 都要提权，非管理员会明确报出来。
+        /// </summary>
+        public static string CleanupStale(out string detail)
+        {
+            detail = "";
+
+            if (!HasStorePackage()) return null;
+
+            var sb = new System.Text.StringBuilder();
+
+            // 1) 服务键。正常卸载后它已经不在了，sc 会返回 1060，忽略即可。
+            int scExit;
+            string scOut;
+            RunTool("sc.exe", "delete PawnIO", out scExit, out scOut);
+            sb.AppendLine("sc delete PawnIO -> exit " + scExit);
+            if (!string.IsNullOrEmpty(scOut)) sb.AppendLine("  " + scOut.Trim());
+
+            // 2) 驱动包。/uninstall 顺带处理设备实例，/force 应付「设备正在使用」。
+            string oem = FindOemInf();
+            if (oem == null)
+            {
+                // 找不到 oem 名就没法删包。这种情况极少（包在、INF 被清理过），
+                // 直接让安装器去试，失败后由调用方把现场报给用户。
+                sb.AppendLine("未在 %windir%\\INF 找到 PawnIO 的 oem*.inf，跳过删包");
+                detail = sb.ToString();
+                return null;
+            }
+
+            int pnpExit;
+            string pnpOut;
+            RunTool("pnputil.exe", "/delete-driver " + oem + " /uninstall /force", out pnpExit, out pnpOut);
+            sb.AppendLine("pnputil /delete-driver " + oem + " -> exit " + pnpExit);
+            if (!string.IsNullOrEmpty(pnpOut))
+            {
+                foreach (var line in pnpOut.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                    if (line.Trim().Length > 0) sb.AppendLine("  " + line.Trim());
+            }
+
+            detail = sb.ToString();
+
+            // 判据只看结果，不看退出码：包真的从 DriverStore 消失了才算清干净。
+            if (HasStorePackage())
+            {
+                if (!PrivilegeHelper.IsElevated)
+                    return "旧的驱动包需要管理员权限才能清理，请以管理员身份运行本程序后重试";
+                return "清理旧驱动包失败（pnputil exit " + pnpExit + "）";
+            }
+
+            return null;
+        }
+
+        /// <summary>跑一个控制台工具，拿退出码与合并输出（输出编码按 OEM 解，只用于日志展示）。</summary>
+        private static void RunTool(string exe, string args, out int exitCode, out string output)
+        {
+            exitCode = -1;
+            output = "";
+            try
+            {
+                var psi = new ProcessStartInfo(exe, args)
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+
+                using (var p = Process.Start(psi))
+                {
+                    if (p == null) return;
+                    string so = p.StandardOutput.ReadToEnd();
+                    string se = p.StandardError.ReadToEnd();
+                    if (!p.WaitForExit(30000))
+                    {
+                        try { p.Kill(); } catch (Exception) { }
+                        output = "超时";
+                        return;
+                    }
+                    exitCode = p.ExitCode;
+                    output = (so + "\r\n" + se).Trim();
+                }
+            }
+            catch (Exception ex)
+            {
+                output = ex.Message;
+            }
+        }
+
+        // ==================================================================
         // 安装
         // ==================================================================
 
         /// <summary>
         /// 以管理员身份静默安装。调用方放后台线程（会阻塞到安装结束）。
-        /// 返回 null 表示成功，否则返回失败原因。
+        /// 返回 null 表示驱动装好且可用（含「装好了但本进程没权限」—— 那是权限问题，
+        /// 不是安装问题，由调用方走提权引导）；否则返回失败原因。
         /// 注意：这里无论如何都不能弹自带 UI，安装器会自己请求 UAC。
         /// </summary>
         public static string Install(string setupPath)
+        {
+            return Install(setupPath, null);
+        }
+
+        /// <summary>
+        /// 同上，额外带出过程日志（给 --pawnio-install 与排障用）。
+        /// </summary>
+        public static string Install(string setupPath, System.Text.StringBuilder trace)
         {
             if (!File.Exists(setupPath)) return "安装包不存在：" + setupPath;
 
             string why;
             if (!Validate(setupPath, out why)) return why;
+
+            // 0) 装过又卸过的机器：先把 DriverStore 里的旧包拆掉，否则安装器会
+            //    跳过导入、直接装设备，然后 0x2 静默失败（见上面那段现场日志）。
+            //
+            //    分两档：
+            //      hard —— 服务键也没了。这种状态安装器 100% 失败，清理必须成功。
+            //      soft —— 服务键还在、只是设备实例缺（官方卸载器的典型残留）。
+            //              直接装一般也能成，清理只是让它更干净，失败了不拦。
+            bool hardStale = HasStaleState();
+            if (hardStale || HasPartialState())
+            {
+                if (trace != null) trace.AppendLine("  检测到旧的驱动包残留，先清理（关键状态："
+                                                    + (hardStale ? "服务键缺失" : "设备实例缺失") + "）");
+                string cdetail;
+                string cerr = CleanupStale(out cdetail);
+                if (trace != null && !string.IsNullOrEmpty(cdetail)) trace.AppendLine(cdetail);
+                if (cerr != null)
+                {
+                    if (trace != null) trace.AppendLine("  清理失败：" + cerr);
+                    if (hardStale) return cerr;          // 不清理就一定装不上
+                    if (trace != null) trace.AppendLine("  继续尝试安装");
+                }
+            }
 
             try
             {
@@ -251,14 +455,61 @@ namespace PerfOverlay.Services
                 return "安装失败：" + ex.Message;
             }
 
-            // 不看退出码：-silent 下错误也是静默的。直接验证设备能不能开。
-            string openWhy;
-            if (CanOpenDevice(out openWhy)) return null;
+            // 不看退出码：-silent 下错误也是静默的，只能自己验。
+            // 设备对象有时比进程退出晚几十毫秒才出现，最多等 3 秒。
+            string openWhy = "";
+            for (int i = 0; i < 15; i++)
+            {
+                if (CanOpenDevice(out openWhy)) return null;
+                if (IsServiceRegistered() && PawnIoBridge.DeviceInstancePresent()) break;
+                System.Threading.Thread.Sleep(200);
+            }
 
-            if (IsServiceRegistered())
-                return "驱动已安装，但当前进程读不到设备：" + openWhy;
+            // 服务 + 设备实例都在，就说明「装上了」。设备打不开只可能是 ACL —— INF 里
+            // 写死只有 SYSTEM 与 Administrators 能访问，非管理员必然 ACCESS_DENIED。
+            // 这是权限问题、不是安装问题，返回成功让上层走「以管理员身份重启」，
+            // 别在这里报「安装未生效」把人引到错方向（0.9.5 之前的真实误判）。
+            if (IsServiceRegistered() && PawnIoBridge.DeviceInstancePresent())
+            {
+                if (trace != null) trace.AppendLine("  服务与设备实例都在；设备打不开 = 权限问题：" + openWhy);
+                return null;
+            }
 
-            return "安装未生效：" + openWhy;
+            if (trace != null) trace.AppendLine("  验证失败：" + openWhy);
+            return "安装未生效：" + openWhy + "。" + Diagnose();
+        }
+
+        /// <summary>安装失败时的一句话现场，用来区分「没装上」「装上了但文件缺」「环境拦住了」。</summary>
+        public static string Diagnose()
+        {
+            string dev = PawnIoBridge.DeviceInstancePresent() ? "在" : "无";
+            string svc = IsServiceRegistered() ? "在" : "无";
+            string sys = DriverFilePresent() ? "在" : "无";
+            string pkg = HasStorePackage() ? "有" : "无";
+            string detail = "设备实例=" + dev + "，服务键=" + svc + "，驱动文件=" + sys + "，DriverStore 包=" + pkg;
+
+            if ("在".Equals(dev) && "在".Equals(svc)) return "（诊断：" + detail + "）";
+            return "（诊断：" + detail + "；可到「应用和功能」里卸载 PawnIO 后重试）";
+        }
+
+        /// <summary>服务真正要加载的那个 .sys 是否在（按服务 ImagePath 还原，不猜路径）。</summary>
+        public static bool DriverFilePresent()
+        {
+            try
+            {
+                using (var k = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                           @"SYSTEM\CurrentControlSet\Services\" + ServiceName))
+                {
+                    if (k == null) return false;
+                    string image = k.GetValue("ImagePath") as string;
+                    if (string.IsNullOrEmpty(image)) return false;
+                    return File.Exists(PawnIoBridge.ResolveImagePath(image));
+                }
+            }
+            catch (Exception)
+            {
+                return false;
+            }
         }
 
         /// <summary>供界面展示的安装位置提示。</summary>

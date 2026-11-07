@@ -143,7 +143,7 @@ namespace PerfOverlay.Services
         }
 
         /// <summary>把服务 ImagePath 还原成可探测的绝对路径（\SystemRoot\… / system32\… / \??\C:\…）。</summary>
-        private static string ResolveImagePath(string image)
+        public static string ResolveImagePath(string image)
         {
             string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
             string p = Environment.ExpandEnvironmentVariables(image).Trim().Trim('"');
@@ -152,6 +152,31 @@ namespace PerfOverlay.Services
             else if (p.StartsWith(@"\Windows\", StringComparison.OrdinalIgnoreCase)) p = p.Substring(1);
             if (!Path.IsPathRooted(p)) p = Path.Combine(windows, p);
             return p;
+        }
+
+        /// <summary>
+        /// PnP 设备实例（ROOT\PAWNIO\0000）是否还在。
+        ///
+        /// 这才是「装没装」最硬的判据，比服务键可靠：官方卸载器**删设备、删 .sys，
+        /// 却把服务键和 DriverStore 里的驱动包都留着**（2026-11-07 实测）。此时
+        /// ImagePath 指向的那份 .sys 仍在 DriverStore 里，`IsServiceRegistered()`
+        /// 会判 true，于是 UI 报「装好了，缺管理员权限」—— 而设备对象压根不存在，
+        /// 用户点「以管理员重启」重启一百次也读不到温度。
+        /// </summary>
+        public static bool DeviceInstancePresent()
+        {
+            try
+            {
+                using (var k = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                           @"SYSTEM\CurrentControlSet\Enum\ROOT\" + ServiceName))
+                {
+                    return k != null && k.GetSubKeyNames().Length > 0;
+                }
+            }
+            catch (Exception)
+            {
+                return false;
+            }
         }
 
         private void TryOpenPciMutex()

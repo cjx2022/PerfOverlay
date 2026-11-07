@@ -180,12 +180,16 @@ namespace PerfOverlay.Services
             string why;
             if (!_io.Open(out why))
             {
-                // 「装没装」只能问注册表：设备不存在时非管理员也可能拿到 ACCESS_DENIED，
-                // 按错误码猜会把「没装」误判成「没权限」，引导就指错方向了。
+                // 「装没装」只能问系统，不能看 CreateFile 的错误码 —— 设备对象不存在时
+                // 非管理员进程拿到的也可能是 ACCESS_DENIED。
+                // 而且光看服务键也不够：官方卸载器会留下服务键与 DriverStore 包，
+                // 只删设备实例和 .sys，那种状态必须报「没装」，否则用户会卡在
+                // 「以管理员重启」的死循环里。所以设备实例才是硬判据。
+                bool device = PawnIoBridge.DeviceInstancePresent();
                 bool registered = PawnIoBridge.IsServiceRegistered();
-                DriverInstalled = registered;
+                DriverInstalled = device && registered;
 
-                if (!registered)
+                if (!DriverInstalled)
                 {
                     _why = "未安装 PawnIO 驱动（CPU 温度需要装一次组件）";
                     DriverState = "not_installed";
