@@ -225,6 +225,22 @@ namespace PerfOverlay
                 return;
             }
 
+            // ---- 温度组件探针：PawnIO 装没装、能不能读 SMN（不装、不改系统）----
+            if (HasArg(e.Args, "--pawnio-status"))
+            {
+                RunPawnIoProbe();
+                Shutdown(0);
+                return;
+            }
+
+            // ---- 温度组件安装：下载 + 校验 + 静默安装（等价于点面板上的感叹号）----
+            if (HasArg(e.Args, "--pawnio-install"))
+            {
+                RunPawnIoInstall();
+                Shutdown(0);
+                return;
+            }
+
             // ---- 自动提权 ----
             // 帧采集（FPS / 1% Low）要靠 PresentMon 开 ETW 会话，必须管理员权限。
             // 双击 exe 时如果当前不是管理员，就地拉起一个提权实例再退出自己，
@@ -234,7 +250,8 @@ namespace PerfOverlay
             // --elevated-attempt 是防循环的保险丝：万一提权成功但进程仍非管理员，
             // 也只允许重试一次。提权失败（被拒绝/策略禁止）时继续以普通权限运行，
             // CPU / 内存 / 显存照常工作，只有 FPS 显示 N/A。
-            bool uiProbe = HasArg(e.Args, "--open-settings") || HasArg(e.Args, "--open-menu");
+            bool uiProbe = HasArg(e.Args, "--open-settings") || HasArg(e.Args, "--open-menu")
+                           || HasArg(e.Args, "--pawnio-status") || HasArg(e.Args, "--pawnio-install");
             if (!PrivilegeHelper.IsElevated
                 && !uiProbe
                 && !HasArg(e.Args, "--noelevate")
@@ -686,6 +703,45 @@ namespace PerfOverlay
                 colA ? "OK" : "FAIL", colB ? "OK" : "FAIL", rowsTied ? "OK" : "FAIL",
                 colGapDip, textFits ? "OK" : "FAIL", metricsOk ? "OK" : "FAIL"));
             if (!textFits && tight.Length > 0) sb.AppendLine("     放不下：" + tight.ToString().Trim());
+
+            // ---- 感叹号点亮时的 CT 行 ----
+            // 它平时是 Collapsed，光看默认布局等于没测。这里临时点亮再量三件事：
+            //   1) 不压在开关上；2) 不越出卡片内容区；3) 开关本身没被挤窄（否则文字会被裁）。
+            string warnLine;
+            bool warnOk = true;
+            {
+                var row = w.TempRow();
+                var chk = row[0];
+                var btn = row[1];
+                double chkBefore = chk.ActualWidth;
+
+                btn.Visibility = System.Windows.Visibility.Visible;
+                w.UpdateLayout();
+
+                var chkT = chk.TransformToAncestor(w).Transform(new System.Windows.Point(0, 0));
+                var btnT = btn.TransformToAncestor(w).Transform(new System.Windows.Point(0, 0));
+                var cardT = w.Cards()[0].TransformToAncestor(w).Transform(new System.Windows.Point(0, 0));
+
+                double chkRight = chkT.X + chk.ActualWidth;
+                double btnLeft = btnT.X;
+                double btnRight = btnLeft + btn.ActualWidth;
+                double limitRight = cardT.X + w.Cards()[0].ActualWidth - 14;   // 卡片内边距 15，留 1 DIP 余量
+
+                bool noOverlap = btnLeft >= chkRight - 0.5;
+                bool inCard = btnRight <= limitRight + 0.5;
+                bool chkKept = Math.Abs(chk.ActualWidth - chkBefore) < 0.5;
+                warnOk = noOverlap && inCard && chkKept;
+
+                warnLine = string.Format(
+                    "   温度感叹号 = 不压开关 {0} / 不越界 {1}（右端 {2:0.0} ≤ {3:0.0}）/ 开关未被挤窄 {4} => {5}",
+                    noOverlap ? "OK" : "FAIL", inCard ? "OK" : "FAIL", btnRight, limitRight,
+                    chkKept ? "OK" : "FAIL", warnOk ? "OK" : "FAIL");
+
+                btn.Visibility = System.Windows.Visibility.Collapsed;
+                w.UpdateLayout();
+            }
+            if (!warnOk) fails++;
+            sb.AppendLine(warnLine);
             sb.AppendLine();
 
             w.CloseForShutdown();
@@ -870,6 +926,198 @@ namespace PerfOverlay
             try
             {
                 File.WriteAllText(Path.Combine(Path.GetTempPath(), "perfoverlay-gpu.txt"),
+                                  sb.ToString(), Encoding.UTF8);
+            }
+            catch (Exception) { }
+        }
+
+        /// <summary>
+        /// 温度组件安装（等价于点设置面板上的感叹号 → 下载并安装）。
+        /// 保留成命令行是为了两件事：自动化验证，以及用户机器上出问题时能一条命令重装。
+        /// </summary>
+        private void RunPawnIoInstall()
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("== CPU 温度组件安装 ==");
+            sb.AppendLine("时间: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+            sb.AppendLine("管理员: " + PrivilegeHelper.IsElevated);
+            sb.AppendLine();
+
+            string why;
+
+            sb.AppendLine("-- 1. 获取安装包 --");
+            string path = null;
+            try { path = PerfOverlay.Services.PawnIoInstaller.EnsureSetup(out why); }
+            catch (Exception ex) { why = ex.Message; }
+
+            if (path == null)
+            {
+                sb.AppendLine("  失败: " + why);
+                WritePawnIoInstallLog(sb);
+                return;
+            }
+            sb.AppendLine("  路径: " + path);
+            sb.AppendLine("  大小: " + new FileInfo(path).Length.ToString("N0") + " 字节");
+
+            sb.AppendLine();
+            sb.AppendLine("-- 2. 校验签名与体积 --");
+            string vwhy;
+            bool ok = PerfOverlay.Services.PawnIoInstaller.Validate(path, out vwhy);
+            sb.AppendLine("  " + (ok ? "通过" : "失败: " + vwhy));
+            if (!ok) { WritePawnIoInstallLog(sb); return; }
+
+            sb.AppendLine();
+            sb.AppendLine("-- 3. 静默安装（-install -silent，UAC 由安装器自己请求）--");
+            string err = PerfOverlay.Services.PawnIoInstaller.Install(path);
+            sb.AppendLine("  " + (err == null ? "成功" : "失败: " + err));
+
+            sb.AppendLine();
+            sb.AppendLine("-- 4. 安装后验证 --");
+            sb.AppendLine("  服务已注册: " + (PerfOverlay.Services.PawnIoBridge.IsServiceRegistered() ? "是" : "否"));
+
+            var pawn = new PerfOverlay.Services.PawnIoCpuTemp();
+            try
+            {
+                bool usable = pawn.Probe();
+                sb.AppendLine("  设备可读: " + (usable ? "是" : "否"));
+                sb.AppendLine("  驱动状态: " + pawn.DriverState);
+                sb.AppendLine("  说明: " + pawn.Status);
+
+                if (usable)
+                {
+                    for (int i = 0; i < 3; i++)
+                    {
+                        double t;
+                        string rwhy;
+                        if (pawn.TryRead(out t, out rwhy))
+                            sb.AppendLine(string.Format("  CT 采样{0}: {1:0.0} ℃", i + 1, t));
+                        else
+                            sb.AppendLine(string.Format("  CT 采样{0}: 失败 —— {1}", i + 1, rwhy));
+                        System.Threading.Thread.Sleep(600);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine("  异常: " + ex.GetType().Name + " " + ex.Message);
+            }
+            finally { pawn.Dispose(); }
+
+            WritePawnIoInstallLog(sb);
+        }
+
+        private static void WritePawnIoInstallLog(System.Text.StringBuilder sb)
+        {
+            try
+            {
+                File.WriteAllText(Path.Combine(Path.GetTempPath(), "perfoverlay-pawnio-install.txt"),
+                                  sb.ToString(), Encoding.UTF8);
+            }
+            catch (Exception) { }
+        }
+
+        /// <summary>
+        /// 温度组件探针：只读不写 —— 不安装、不改注册表、不留文件（除了这份报告）。
+        /// 用来回答三个问题：这台机器该不该走 PawnIO、驱动在不在、装完之后读数是多少。
+        /// </summary>
+        private void RunPawnIoProbe()
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("== CPU 温度组件探针 ==");
+            sb.AppendLine("时间: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+            sb.AppendLine("管理员: " + PrivilegeHelper.IsElevated);
+            sb.AppendLine(string.Format("OS: {0}  ({1})", Environment.OSVersion.Version,
+                                        Environment.Is64BitProcess ? "x64 进程" : "x86 进程"));
+            sb.AppendLine();
+            sb.AppendLine("-- 处理器 --");
+            sb.AppendLine("  " + PerfOverlay.Services.PawnIoCpuTemp.CpuSummary);
+            sb.AppendLine("  模块白名单 family 17h~1Ah: "
+                          + (PerfOverlay.Services.PawnIoCpuTemp.IsSupportedCpu ? "命中" : "不命中"));
+            sb.AppendLine();
+
+            sb.AppendLine("-- 第一级：ACPI 热区（零依赖）--");
+            var acpi = new PerfOverlay.Services.AcpiTempProbe();
+            try
+            {
+                bool ok = acpi.Probe();
+                sb.AppendLine("  可用: " + (ok ? "是" : "否"));
+                sb.AppendLine("  状态: " + acpi.Status);
+                if (ok)
+                {
+                    double t;
+                    string why;
+                    sb.AppendLine("  热区数: " + acpi.ZoneCount + "  传感器: " + acpi.SensorName);
+                    if (acpi.TryRead(out t, out why))
+                        sb.AppendLine(string.Format("  读数: {0:0.0} ℃", t));
+                    else
+                        sb.AppendLine("  读取失败: " + why);
+                }
+            }
+            catch (Exception ex) { sb.AppendLine("  异常: " + ex.Message); }
+            finally { acpi.Dispose(); }
+            sb.AppendLine();
+
+            sb.AppendLine("-- 第二级：PawnIO + AMDFamily17（需安装）--");
+            sb.AppendLine("  服务已注册: " + (PerfOverlay.Services.PawnIoInstaller.IsServiceRegistered() ? "是" : "否"));
+            // 只查有没有，不触发下载：探针必须保持「只读、不联网」的承诺
+            string cache = PerfOverlay.Services.PawnIoInstaller.CachePath;
+            string sidecar = Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
+                                          PerfOverlay.Services.PawnIoInstaller.SetupFileName);
+            sb.AppendLine("  安装包缓存: " + cache + (File.Exists(cache) ? "（已有）" : "（无）"));
+            sb.AppendLine("  程序旁安装包: " + sidecar + (File.Exists(sidecar) ? "（已有）" : "（无）"));
+            sb.AppendLine();
+
+            var pawn = new PerfOverlay.Services.PawnIoCpuTemp();
+            try
+            {
+                bool ok = pawn.Probe();
+                sb.AppendLine("  可用: " + (ok ? "是" : "否"));
+                sb.AppendLine("  驱动状态: " + pawn.DriverState);
+                sb.AppendLine("  说明: " + pawn.Status);
+
+                if (ok)
+                {
+                    for (int i = 0; i < 3; i++)
+                    {
+                        double t;
+                        string why;
+                        if (pawn.TryRead(out t, out why))
+                            sb.AppendLine(string.Format("  采样{0}: {1:0.0} ℃", i + 1, t));
+                        else
+                            sb.AppendLine(string.Format("  采样{0}: 失败 —— {1}", i + 1, why));
+                        System.Threading.Thread.Sleep(500);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine("  异常: " + ex.GetType().Name + " " + ex.Message);
+            }
+            finally { pawn.Dispose(); }
+
+            sb.AppendLine();
+            sb.AppendLine("-- 结论 --");
+            string state = PerfOverlay.Services.PawnIoInstaller.DescribeState();
+            sb.AppendLine("  UI 状态: " + state);
+            switch (state)
+            {
+                case "ready":
+                    sb.AppendLine("  → 温度可用，设置面板不会出现感叹号");
+                    break;
+                case "no_access":
+                    sb.AppendLine("  → 驱动已装，但当前进程不是管理员，CT 会是 --");
+                    break;
+                case "not_installed":
+                    sb.AppendLine("  → 设置面板会显示感叹号，点击进入安装引导");
+                    break;
+                default:
+                    sb.AppendLine("  → 非 AMD 17h~1Ah，这条路用不上；CT 只能靠 ACPI");
+                    break;
+            }
+
+            try
+            {
+                File.WriteAllText(Path.Combine(Path.GetTempPath(), "perfoverlay-pawnio.txt"),
                                   sb.ToString(), Encoding.UTF8);
             }
             catch (Exception) { }

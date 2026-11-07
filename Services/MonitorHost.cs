@@ -32,10 +32,16 @@ namespace PerfOverlay.Services
         public bool GpuOk;
         public string GpuDetail = "";
 
-        /// <summary>CT = CPU 温度（LibreHardwareMonitor 读 DTS）。</summary>
+        /// <summary>CT = CPU 温度（ACPI 热区优先；读不到且是 AMD 时走 PawnIO 读 SMN）。</summary>
         public double TempCpuC;
         public bool TempCpuOk;
         public string TempCpuDetail = "";
+
+        /// <summary>
+        /// CT 的取数状态，只给界面判断要不要弹「安装温度组件」用：
+        /// not_installed / no_access / unsupported / read_failed / 空=正常或未开。
+        /// </summary>
+        public string CpuTempState = "";
 
         /// <summary>GT = GPU 温度（优先 NVML，读不到再用 LibreHardwareMonitor 的 GPU Core）。</summary>
         public double TempGpuC;
@@ -65,8 +71,13 @@ namespace PerfOverlay.Services
         // NVML 降为兜底：只有上面两条路都失败（或非 Windows 常见显卡）时才去加载 nvml.dll。
         private NvmlProbe _nvml;
         private bool _nvmlTried;
-        // CPU 温度：只读 ACPI 热区（系统自带 WMI，零驱动零安装）。
+        // CPU 温度：第一级读 ACPI 热区（系统自带 WMI，零驱动零安装）。
         private AcpiTempProbe _temp;
+        // CPU 温度：第二级 PawnIO + AMDFamily17 读 SMN。只有第一级失败、且用户真的
+        // 点过「安装温度组件」之后才会被创建 —— 没装的机器上这个对象连影子都没有。
+        private PawnIoCpuTemp _pawnTemp;
+        /// <summary>保护 _pawnTemp 的创建/替换/释放：采样线程与 UI 线程都会碰它。</summary>
+        private readonly object _tempGate = new object();
 
         private bool _framesStarted;
         private string _framesWhy = "";
@@ -103,6 +114,39 @@ namespace PerfOverlay.Services
         }
 
         public bool FramesRunning { get { return Frames.IsRunning; } }
+
+        /// <summary>
+        /// CT 当前的取数状态，给设置面板判断要不要显示感叹号。
+        /// 只读，不会触发安装 —— 驱动不在就是 not_installed，仅此而已。
+        /// </summary>
+        public string CpuTempState
+        {
+            get
+            {
+                if (_pawnTemp != null) return _pawnTemp.DriverState;
+                if (_temp != null && _temp.Probe()) return "ready";
+                return PawnIoCpuTemp.IsSupportedCpu ? "not_installed" : "unsupported";
+            }
+        }
+
+        /// <summary>装完驱动后调用：让温度探针重新走一遍（包括重新打开设备）。</summary>
+        public void ResetCpuTempProbe()
+        {
+            // 采样线程正在用 _pawnTemp 时不能把它换掉：句柄释放到一半会被读到，结果是
+            // ObjectDisposedException（会被吞掉，但那一轮 CT 就变 -- 了）。
+            lock (_tempGate)
+            {
+                if (_pawnTemp != null)
+                {
+                    _pawnTemp.Reset();
+                }
+                else if (PawnIoCpuTemp.IsSupportedCpu)
+                {
+                    _pawnTemp = new PawnIoCpuTemp();
+                }
+                if (_pawnTemp != null) _pawnTemp.Probe();
+            }
+        }
 
         public void Start(AppSettings settings)
         {
@@ -243,12 +287,35 @@ namespace PerfOverlay.Services
             if (s.ShowTemp)
             {
                 if (_temp == null) _temp = new AcpiTempProbe();
-                _temp.Probe();
+
+                // 只有 ACPI 这条路确定走不通、且主板这条路本来就用得上（AMD 17h~1Ah），
+                // 才去碰 PawnIO。注意这里 **不会** 触发安装：驱动不存在时
+                // PawnIoBridge 打开设备会立刻失败（ERROR_FILE_NOT_FOUND），
+                // 我们只是把结论记下来给 UI 显示感叹号，绝不在后台偷偷装东西。
+                if (!_temp.Probe() && PawnIoCpuTemp.IsSupportedCpu)
+                {
+                    lock (_tempGate)
+                    {
+                        if (_pawnTemp == null) _pawnTemp = new PawnIoCpuTemp();
+                        _pawnTemp.Probe();
+                    }
+                }
             }
-            else if (_temp != null)
+            else
             {
-                _temp.Dispose();
-                _temp = null;
+                if (_temp != null)
+                {
+                    _temp.Dispose();
+                    _temp = null;
+                }
+                lock (_tempGate)
+                {
+                    if (_pawnTemp != null)
+                    {
+                        _pawnTemp.Dispose();
+                        _pawnTemp = null;
+                    }
+                }
             }
 
             // 两条普适路径都关掉时，NVML 缓存也一并退掉
@@ -375,28 +442,55 @@ namespace PerfOverlay.Services
         }
 
         /// <summary>
-        /// CPU 温度：只走 ACPI 热区（root\WMI）。这是唯一「零依赖」的路 ——
-        /// 纯用户态、免管理员、不加载任何驱动，所以既不会被内存完整性拦截，
-        /// 也不需要用户装任何东西。代价是台式机 BIOS 常不实现 _TZ，
-        /// 读不到就诚实显示 N/A 并把原因写进 tooltip。
+        /// CPU 温度：两级。第一级 ACPI 热区（root\WMI），零依赖零权限；
+        /// 第二级 PawnIO + AMDFamily17 读 SMN 寄存器（AMD 17h~1Ah 通用，要装一次驱动）。
+        ///
+        /// 「两级都失败」时把结论分成四类写进快照，UI 据此决定要不要给感叹号：
+        ///   not_installed —— 该装驱动（AMD 机器 + ACPI 不支持）
+        ///   no_access     —— 驱动装好了，但当前不是管理员
+        ///   unsupported   —— 非 AMD，或者 ACPI 已经可用（不需要驱动）
+        ///   read_failed   —— 装了也读不到，属于真异常
         /// </summary>
         private void FillCpuTemp(MetricsSnapshot snap)
         {
-            if (_temp == null) return;
-
             double t;
-            string why;
-            if (_temp.TryRead(out t, out why))
+            string why = "";
+
+            // ---- 第一级：ACPI 热区 ----
+            if (_temp != null && _temp.TryRead(out t, out why))
             {
                 snap.TempCpuOk = true;
                 snap.TempCpuC = t;
                 snap.TempCpuDetail = "CPU 温度（ACPI 热区"
                     + (_temp.SensorName.Length > 0 ? "：" + _temp.SensorName : "") + "）";
+                return;
             }
-            else if (snap.TempCpuDetail.Length == 0)
+
+            string acpiWhy = why;
+
+            // ---- 第二级：PawnIO ----
+            lock (_tempGate)
             {
-                snap.TempCpuDetail = why;
+                if (_pawnTemp != null)
+                {
+                    _pawnTemp.Probe();
+                    if (_pawnTemp.TryRead(out t, out why))
+                    {
+                        snap.TempCpuOk = true;
+                        snap.TempCpuC = t;
+                        snap.TempCpuDetail = "CPU 温度（SMN 寄存器，PawnIO）";
+                        return;
+                    }
+
+                    snap.CpuTempState = _pawnTemp.DriverState;
+                    snap.TempCpuDetail = _pawnTemp.Status;
+                    return;
+                }
             }
+
+            // ---- 两级都没走通 ----
+            snap.CpuTempState = PawnIoCpuTemp.IsSupportedCpu ? "not_installed" : "unsupported";
+            if (snap.TempCpuDetail.Length == 0) snap.TempCpuDetail = acpiWhy;
         }
 
         /// <summary>
@@ -497,6 +591,7 @@ namespace PerfOverlay.Services
             if (_wddmTemp != null) { _wddmTemp.Dispose(); _wddmTemp = null; }
             if (_nvml != null) { _nvml.Dispose(); _nvml = null; }
             if (_temp != null) { _temp.Dispose(); _temp = null; }
+            if (_pawnTemp != null) { _pawnTemp.Dispose(); _pawnTemp = null; }
         }
 
         /// <summary>

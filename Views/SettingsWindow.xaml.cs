@@ -13,6 +13,8 @@ namespace PerfOverlay.Views
         // 那一刻其它控件还没构造出来，Collect() 必然 NRE。
         private bool _loading = true;
         private bool _allowClose;
+        /// <summary>采集端引用，只用来查 CT 状态和装完驱动后重新探测。</summary>
+        private MonitorHost _host;
 
         public event EventHandler<AppSettings> SettingsChanged;
         /// <summary>0=左上 1=中上 2=右上。参数是选中的档位。</summary>
@@ -37,6 +39,12 @@ namespace PerfOverlay.Views
         public System.Windows.FrameworkElement[] Cards()
         {
             return new System.Windows.FrameworkElement[] { CardDisplay, CardAppearance, CardBehavior, CardFrame };
+        }
+
+        /// <summary>诊断用：CT 行（开关 + 感叹号）。感叹号平时是 Collapsed，断言要临时点亮它。</summary>
+        public System.Windows.FrameworkElement[] TempRow()
+        {
+            return new System.Windows.FrameworkElement[] { ChkTemp, BtnTempWarn };
         }
 
         /// <summary>
@@ -124,6 +132,8 @@ namespace PerfOverlay.Views
         {
             if (host == null) return;
 
+            _host = host;
+
             bool can = PrivilegeHelper.CanCaptureFrames;
             bool running = host.FramesRunning;
 
@@ -149,11 +159,62 @@ namespace PerfOverlay.Views
             }
 
             RefreshPrivilegeUi();
+            RefreshTempUi();
         }
 
         private void RefreshPrivilegeUi()
         {
             BtnElevate.IsEnabled = !PrivilegeHelper.IsElevated;
+        }
+
+        /// <summary>
+        /// 温度项的感叹号只在「确实卡住了、而且用户能动手解决」时出现：
+        ///   not_installed → 该装组件
+        ///   no_access     → 装好了但缺管理员
+        /// 其它状态（读得到、非 AMD、装了也读不到）都不打扰 —— 原因写在浮窗 tooltip 里。
+        /// </summary>
+        private void RefreshTempUi()
+        {
+            if (BtnTempWarn == null) return;
+
+            if (_host == null || ChkTemp.IsChecked != true)
+            {
+                BtnTempWarn.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            string state = _host.CpuTempState;
+            if (state == "not_installed")
+            {
+                BtnTempWarn.Visibility = Visibility.Visible;
+                BtnTempWarn.ToolTip = "CPU 温度需要装一个驱动组件，点这里看说明";
+            }
+            else if (state == "no_access")
+            {
+                BtnTempWarn.Visibility = Visibility.Visible;
+                BtnTempWarn.ToolTip = "温度组件已装好，需要管理员权限才能读";
+            }
+            else
+            {
+                BtnTempWarn.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        private void OnTempWarnClick(object sender, RoutedEventArgs e)
+        {
+            if (_host == null) return;
+
+            var mode = _host.CpuTempState == "no_access"
+                ? DriverPromptWindow.Mode.Elevate
+                : DriverPromptWindow.Mode.Install;
+
+            DriverPromptWindow.ShowPrompt(this, mode, delegate
+            {
+                _host.ResetCpuTempProbe();
+                RefreshTempUi();
+            });
+
+            RefreshTempUi();
         }
 
         // ==================================================================
@@ -198,7 +259,7 @@ namespace PerfOverlay.Views
             if (h != null) h(this, _s.Clone());
         }
 
-        private void OnAnyOptionChanged(object sender, RoutedEventArgs e) { Emit(); }
+        private void OnAnyOptionChanged(object sender, RoutedEventArgs e) { Emit(); RefreshTempUi(); }
 
         private void OnColorChanged(object sender, RoutedEventArgs e) { Emit(); }
 

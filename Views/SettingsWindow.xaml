@@ -13,6 +13,34 @@
         TextOptions.TextFormattingMode="Ideal">
 
     <Window.Resources>
+        <!-- 温度项旁边的感叹号：只在「该装驱动」或「缺管理员」时出现，
+             14 DIP 的小圆点，不抢布局、不改变行的基线。 -->
+        <Style x:Key="TempWarn" TargetType="Button">
+            <Setter Property="Width" Value="14" />
+            <Setter Property="Height" Value="14" />
+            <Setter Property="Margin" Value="3,0,0,0" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid>
+                            <Ellipse x:Name="Disc" Fill="#FFF5A623" />
+                            <TextBlock Text="!" FontSize="9.5" FontWeight="Bold" Foreground="White"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                       Margin="0,0,0,0.5" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Disc" Property="Fill" Value="#FFE08E10" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- 颜色色块：选了就套一圈强调色，白块在浅底上也靠这圈边看得见 -->
         <Style x:Key="Swatch" TargetType="RadioButton">
             <Setter Property="Width" Value="28" />
@@ -151,10 +179,15 @@
                                       Style="{StaticResource Switch}" Content="GPU 使用率"
                                       ToolTip="整卡利用率（WDDM 引擎计数器，与任务管理器同源，NVIDIA / AMD / Intel 通用）"
                                       Margin="0,0,0,12" Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
-                            <CheckBox x:Name="ChkTemp" Grid.Row="3" Grid.Column="2"
-                                      Style="{StaticResource Switch}" Content="温度 CT/GT"
-                                      ToolTip="CT = CPU 温度（优先 ACPI 热区，免驱动；读不到才需要 PawnIO 驱动）　GT = GPU 温度（WDDM，免驱动，NVIDIA / AMD 通用）"
-                                      Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
+                            <StackPanel Grid.Row="3" Grid.Column="2" Orientation="Horizontal">
+                                <CheckBox x:Name="ChkTemp"
+                                          Style="{StaticResource Switch}" Content="温度 CT/GT"
+                                          ToolTip="CT = CPU 温度（先试 ACPI 热区；读不到且是 AMD 时走 PawnIO 读 SMN 寄存器）　GT = GPU 温度（WDDM，免驱动，NVIDIA / AMD 通用）"
+                                          Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
+                                <Button x:Name="BtnTempWarn" Style="{StaticResource TempWarn}"
+                                        Visibility="Collapsed" Click="OnTempWarnClick"
+                                        ToolTip="CPU 温度取不到，点这里看原因" />
+                            </StackPanel>
                         </Grid>
                     </StackPanel>
                 </Border>
@@ -325,7 +358,7 @@
                         <StackPanel>
                             <TextBlock Text="帧数采集" Style="{StaticResource SectionTitle}" Margin="0,0,0,8" />
 
-                            <TextBlock Text="帧数与 1% Low 需要管理员权限。开机自启时会弹授权框，点「是」即可。"
+                            <TextBlock Text="帧数、1% Low 与 CPU 温度需要管理员权限。开机自启时会弹授权框，点「是」即可。"
                                        FontSize="12" LineHeight="19" TextWrapping="Wrap"
                                        Foreground="{StaticResource TextSecondary}" />
 

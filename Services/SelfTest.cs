@@ -159,7 +159,7 @@ namespace PerfOverlay.Services
             }
             w("");
 
-            w("--- CPU 温度 (ACPI 热区，零依赖) ---");
+            w("--- CPU 温度 · 第一级：ACPI 热区（零依赖） ---");
             w("（纯用户态：免管理员、免驱动、免安装；固件不实现 _TZ 时会读不到）");
             var at = new AcpiTempProbe();
             w("探测: " + at.Probe() + "   热区数: " + at.ZoneCount);
@@ -173,6 +173,24 @@ namespace PerfOverlay.Services
                 w("热区: " + (at.SensorName.Length > 0 ? at.SensorName : "(未命名)"));
             }
             at.Dispose();
+            w("");
+
+            w("--- CPU 温度 · 第二级：PawnIO + AMDFamily17（需安装） ---");
+            w("处理器: " + PawnIoCpuTemp.CpuSummary
+              + "  白名单命中: " + PawnIoCpuTemp.IsSupportedCpu);
+            w("服务已注册: " + PawnIoBridge.IsServiceRegistered());
+            var pt = new PawnIoCpuTemp();
+            bool ptOk = pt.Probe();
+            w("可用: " + ptOk + "   驱动状态: " + pt.DriverState);
+            w("说明: " + pt.Status);
+            if (ptOk)
+            {
+                double tc;
+                string why;
+                w("读取: CT = " + (pt.TryRead(out tc, out why)
+                    ? string.Format("{0:0.0} °C", tc) : "不可读 " + why));
+            }
+            pt.Dispose();
             w("");
 
             w("--- 对照：NVML（仅 NVIDIA，已是兜底路径） ---");

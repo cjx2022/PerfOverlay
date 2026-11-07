@@ -40,6 +40,37 @@ OR OTHER DEALINGS IN THE SOFTWARE.
 
 ---
 
+## PawnIO 模块 `AMDFamily17.bin`（用于 CPU 温度）
+
+- 用途：通过 PawnIO 驱动读 AMD 的 SMN 寄存器（`THM_TCON_CUR_TMP` @ `0x00059800`），
+  得到 CPU 封装温度（CT）。只在用户主动安装温度组件、且处理器为 AMD 17h~1Ah 时才会被加载。
+- 来源：<https://github.com/namazso/PawnIO.Modules>（模块包 `release_0_2_11.zip`，
+  上游项目 <https://github.com/namazso/PawnIO>）
+- 二进制：`AMDFamily17.bin`，10,652 字节，SHA-256
+  `DAE74615761B78BDF064DFB3E136252DDCC6FC727D88F14738D0E5800D427A91`
+- 分发方式：以**嵌入资源**打进 `PerfOverlay.exe`，运行时整块喂给 PawnIO 设备。
+  程序目录下的 `tools\AMDFamily17.bin`（或根目录同名文件）**优先于内嵌版本**，
+  因此用户可以替换成自己编译的模块，不需要重新编译本程序。
+- 许可：**LGPL-2.1**，全文见 `LICENSES/LGPL-2.1-PawnIO-Modules.txt`。
+  源码获取：<https://github.com/namazso/PawnIO.Modules>（同名 `AMDFamily17.p`）。
+
+### 关于 PawnIO 驱动本体
+
+驱动与官方安装器 `PawnIO_setup.exe` **不由本项目分发**：程序只会在用户点击「下载并安装」后
+从官方地址取一份，校验数字签名者为 `namazso` 之后交给它自己安装。
+
+驱动为 GPL-2.0（附特殊例外，全文见 <https://github.com/namazso/PawnIO>）。本程序
+**不链接 `PawnIOLib.dll`**，只通过 `DeviceIoControl` 与设备通信 —— 这正是该例外明文允许的用法：
+
+> In addition, as a special exception, the copyright holders of PawnIO give you permission
+> to combine PawnIO program with free software programs or libraries that are released under
+> the GNU LGPL and with independent modules that communicate with PawnIO **solely through
+> the device IO control interface**.
+
+因此本项目的 MIT 许可不受影响。
+
+---
+
 ## .NET Framework / WPF / Windows Forms
 
 应用程序基于 .NET Framework 4.8 编写，运行时随 Windows 提供，**不随本项目分发**，

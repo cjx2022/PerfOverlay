@@ -14,10 +14,10 @@
     <Platforms>x64</Platforms>
 
     <!-- 版本与署名 -->
-    <Version>0.9.5</Version>
-    <AssemblyVersion>0.9.5.0</AssemblyVersion>
-    <FileVersion>0.9.5.0</FileVersion>
-    <InformationalVersion>0.9.5</InformationalVersion>
+    <Version>0.9.6</Version>
+    <AssemblyVersion>0.9.6.0</AssemblyVersion>
+    <FileVersion>0.9.6.0</FileVersion>
+    <InformationalVersion>0.9.6</InformationalVersion>
     <AssemblyTitle>PerfOverlay 性能浮窗</AssemblyTitle>
     <Product>PerfOverlay</Product>
     <Description>轻量桌面性能浮窗：CPU / 内存 / 帧数 / 1% Low / 显存 / GPU / 温度 / 时间</Description>
@@ -47,12 +47,18 @@
     <Reference Include="System.Management" />
   </ItemGroup>
 
-  <!-- _tools 下是配套的验证小工具（独立项目），不要被主项目编译进去 -->
+  <!-- _tools 下是配套的验证小工具（独立项目），不要被主项目编译进去；
+       _test 是排障用的一次性脚本与参考源码，同样不能进编译（里面有从上游拉下来的 .cs） -->
   <ItemGroup>
     <Compile Remove="_tools\**" />
     <Page Remove="_tools\**" />
     <None Remove="_tools\**" />
     <EmbeddedResource Remove="_tools\**" />
+
+    <Compile Remove="_test\**" />
+    <Page Remove="_test\**" />
+    <None Remove="_test\**" />
+    <EmbeddedResource Remove="_test\**" />
   </ItemGroup>
 
   <!--
@@ -62,6 +68,15 @@
   -->
   <ItemGroup>
     <EmbeddedResource Include="tools\PresentMon.exe" LogicalName="PerfOverlay.PresentMon.exe" />
+    <!--
+      AMDFamily17：PawnIO 的官方 AMD 模块（10,652 B，来自 PawnIO.Modules 0.2.11 release）。
+      它提供 ioctl_read_smn —— 直接读 AMD 的 SMN 索引/数据寄存器（PCI 配置 0x60/0x64），
+      Zen1~Zen5（family 17h~1Ah）全覆盖，所以 5600 和 9600X 走同一条路。
+      只有用户明确点了「安装温度组件」、且系统里已有 PawnIO 驱动时才会被加载，
+      平时不占内存、不碰硬件；打进 exe 而不是运行时下载，是为了让「装完就能用」
+      不依赖第二次网络请求 —— 国内访问 GitHub 本来就时好时坏。
+    -->
+    <EmbeddedResource Include="tools\AMDFamily17.bin" LogicalName="PerfOverlay.AMDFamily17.bin" />
   </ItemGroup>
 
 </Project>
