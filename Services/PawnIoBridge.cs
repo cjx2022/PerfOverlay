@@ -1,5 +1,6 @@
 using System;
 using System.ComponentModel;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -125,13 +126,32 @@ namespace PerfOverlay.Services
                 using (var k = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
                            @"SYSTEM\CurrentControlSet\Services\" + ServiceName))
                 {
-                    return k != null;
+                    if (k == null) return false;
+
+                    // 光看键存在不够：官方卸载器会删掉 .sys 与 Program Files，
+                    // 却把服务键留在原处（实测 Start 仍是 3）。这种残留键会让
+                    // 「没装」被误判成「装好了但缺权限」，引导就指错方向。
+                    string image = k.GetValue("ImagePath") as string;
+                    if (string.IsNullOrEmpty(image)) return false;
+                    return File.Exists(ResolveImagePath(image));
                 }
             }
             catch (Exception)
             {
                 return false;
             }
+        }
+
+        /// <summary>把服务 ImagePath 还原成可探测的绝对路径（\SystemRoot\… / system32\… / \??\C:\…）。</summary>
+        private static string ResolveImagePath(string image)
+        {
+            string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            string p = Environment.ExpandEnvironmentVariables(image).Trim().Trim('"');
+            if (p.StartsWith(@"\??\", StringComparison.Ordinal)) p = p.Substring(4);
+            else if (p.StartsWith(@"\SystemRoot\", StringComparison.OrdinalIgnoreCase)) p = p.Substring(12);
+            else if (p.StartsWith(@"\Windows\", StringComparison.OrdinalIgnoreCase)) p = p.Substring(1);
+            if (!Path.IsPathRooted(p)) p = Path.Combine(windows, p);
+            return p;
         }
 
         private void TryOpenPciMutex()
