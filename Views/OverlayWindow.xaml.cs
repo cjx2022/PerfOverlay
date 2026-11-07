@@ -89,35 +89,15 @@ namespace PerfOverlay.Views
         // 配置
         // ==================================================================
 
-        // 开关显示项触发行重建时，窗口宽度会变；若浮窗贴着角（右上等），
-        // SizeToContent 会让窗口往右长出屏幕外 → 显示不全。重建前把贴角档位
-        // 记下来，等新宽度在 SizeChanged 里出来后再贴回去 = 自动做一次「复位」。
-        // 拖动过的浮窗（档位 -1）不动，尊重用户自己摆的位置。
-        private int _pendingAlign = -1;
-
         public void ApplySettings(AppSettings s, bool rebuildRows)
         {
             _settings = s;
             Opacity = Math.Max(0.3, Math.Min(1.0, s.Opacity));
 
-            if (rebuildRows)
-            {
-                int align = CurrentAlignMode();
-                BuildGroups();
-                if (align >= 0) _pendingAlign = align;
-            }
+            if (rebuildRows) BuildGroups();
 
             ApplyWindowStyle();
             Reposition();
-        }
-
-        protected override void OnRenderSizeChanged(SizeChangedInfo sizeInfo)
-        {
-            base.OnRenderSizeChanged(sizeInfo);
-            if (_pendingAlign < 0) return;
-            int m = _pendingAlign;
-            _pendingAlign = -1;
-            AlignHorizontal(m);
         }
 
         private void BuildGroups()
@@ -194,16 +174,17 @@ namespace PerfOverlay.Views
                 VerticalAlignment = VerticalAlignment.Center
             };
 
-            // 竖条也要有框线：浅色底 + 白字时，一根裸的白条几乎看不见，
-            // 文字有描边而竖条没有会显得"断了一截"。开描边时把边框一起画上，
-            // 宽度加两侧 strokeW 保证条芯仍是 1.5 DIP；描边关掉就回到裸条。
+            // 竖条要有框线但要细：条芯 1 DIP，边框取文字描边的一半
+            // （描边是跨字形两侧各半画的，条上整份描边会显得比文字粗一圈）；
+            // 描边关掉就回到裸条。
+            double barStroke = strokeW > 0 ? Math.Max(1.0, strokeW * 0.5) : 0;
             var bar = new Border
             {
-                Width = strokeW > 0 ? 1.5 + strokeW * 2 : 1.5,
+                Width = 1.0 + barStroke * 2,
                 Height = Math.Round(fs * 0.82),
                 Background = barBrush,
                 BorderBrush = outlineBrush,
-                BorderThickness = strokeW > 0 ? new Thickness(strokeW) : new Thickness(0),
+                BorderThickness = barStroke > 0 ? new Thickness(barStroke) : new Thickness(0),
                 Opacity = 0.85,
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(gapBefore, 0, Math.Round(fs * 0.42), 0)
