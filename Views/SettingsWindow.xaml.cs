@@ -44,17 +44,17 @@ namespace PerfOverlay.Views
         /// <summary>诊断用：CT 行（开关 + 感叹号）。感叹号平时是 Collapsed，断言要临时点亮它。</summary>
         public System.Windows.FrameworkElement[] TempRow()
         {
-            return new System.Windows.FrameworkElement[] { ChkTemp, BtnTempWarn };
+            return new System.Windows.FrameworkElement[] { ChkCpuTemp, BtnTempWarn };
         }
 
         /// <summary>
-        /// 诊断用：显示项目卡里的八个开关，顺序是「左列 4 个 + 右列 4 个」。
+        /// 诊断用：显示项目卡里的九个开关，顺序是「左列 4 个 + 右列 5 个」。
         /// 两列布局光看截图会漏掉文字被压窄、列间重叠这类问题，必须有 rect 可量。
         /// </summary>
         public System.Windows.FrameworkElement[] MetricSwitches()
         {
             return new System.Windows.FrameworkElement[]
-            { ChkCpu, ChkMem, ChkFps, ChkLow, ChkVram, ChkClock, ChkGpu, ChkTemp };
+            { ChkCpu, ChkMem, ChkFps, ChkLow, ChkVram, ChkClock, ChkGpu, ChkCpuTemp, ChkGpuTemp };
         }
 
         /// <summary>诊断用：内容区根（不含标题栏），按钮越界检查以它为右边界。</summary>
@@ -97,7 +97,8 @@ namespace PerfOverlay.Views
             ChkVram.IsChecked = _s.ShowVram;
             ChkClock.IsChecked = _s.ShowClock;
             ChkGpu.IsChecked = _s.ShowGpu;
-            ChkTemp.IsChecked = _s.ShowTemp;
+            ChkCpuTemp.IsChecked = _s.ShowCpuTemp;
+            ChkGpuTemp.IsChecked = _s.ShowGpuTemp;
 
             if (_s.SizeMode == "S") SegS.IsChecked = true;
             else if (_s.SizeMode == "L") SegL.IsChecked = true;
@@ -171,13 +172,13 @@ namespace PerfOverlay.Views
         /// 温度项的感叹号只在「确实卡住了、而且用户能动手解决」时出现：
         ///   not_installed → 该装组件
         ///   no_access     → 装好了但缺管理员
-        /// 其它状态（读得到、非 AMD、装了也读不到）都不打扰 —— 原因写在浮窗 tooltip 里。
+        /// 其它状态（读得到、架构不支持、装了也读不到）都不打扰 —— 原因写在浮窗 tooltip 里。
         /// </summary>
         private void RefreshTempUi()
         {
             if (BtnTempWarn == null) return;
 
-            if (_host == null || ChkTemp.IsChecked != true)
+            if (_host == null || ChkCpuTemp.IsChecked != true)
             {
                 BtnTempWarn.Visibility = Visibility.Collapsed;
                 return;
@@ -228,7 +229,8 @@ namespace PerfOverlay.Views
             _s.ShowVram = ChkVram.IsChecked == true;
             _s.ShowClock = ChkClock.IsChecked == true;
             _s.ShowGpu = ChkGpu.IsChecked == true;
-            _s.ShowTemp = ChkTemp.IsChecked == true;
+            _s.ShowCpuTemp = ChkCpuTemp.IsChecked == true;
+            _s.ShowGpuTemp = ChkGpuTemp.IsChecked == true;
 
             if (SegS.IsChecked == true) _s.SizeMode = "S";
             else if (SegL.IsChecked == true) _s.SizeMode = "L";

@@ -32,7 +32,7 @@ namespace PerfOverlay.Services
         public bool GpuOk;
         public string GpuDetail = "";
 
-        /// <summary>CT = CPU 温度（ACPI 热区优先；读不到且是 AMD 时走 PawnIO 读 SMN）。</summary>
+        /// <summary>CT = CPU 温度（ACPI 热区优先；读不到时走 PawnIO：AMD 读 SMN、Intel 读 MSR）。</summary>
         public double TempCpuC;
         public bool TempCpuOk;
         public string TempCpuDetail = "";
@@ -269,7 +269,7 @@ namespace PerfOverlay.Services
             }
 
             // ---- GPU 温度 ----
-            if (s.ShowTemp)
+            if (s.ShowGpuTemp)
             {
                 if (_wddmTemp == null)
                 {
@@ -284,11 +284,11 @@ namespace PerfOverlay.Services
             }
 
             // ---- CPU 温度 ----
-            if (s.ShowTemp)
+            if (s.ShowCpuTemp)
             {
                 if (_temp == null) _temp = new AcpiTempProbe();
 
-                // 只有 ACPI 这条路确定走不通、且主板这条路本来就用得上（AMD 17h~1Ah），
+                // 只有 ACPI 这条路确定走不通、且处理器本来就在支持范围内（AMD 17h~1Ah / Intel Core），
                 // 才去碰 PawnIO。注意这里 **不会** 触发安装：驱动不存在时
                 // PawnIoBridge 打开设备会立刻失败（ERROR_FILE_NOT_FOUND），
                 // 我们只是把结论记下来给 UI 显示感叹号，绝不在后台偷偷装东西。
@@ -319,7 +319,7 @@ namespace PerfOverlay.Services
             }
 
             // 两条普适路径都关掉时，NVML 缓存也一并退掉
-            if (!s.ShowGpu && !s.ShowTemp && _nvml != null)
+            if (!s.ShowGpu && !s.ShowGpuTemp && _nvml != null)
             {
                 _nvml.Dispose();
                 _nvml = null;
@@ -340,11 +340,8 @@ namespace PerfOverlay.Services
 
             if (s != null && s.ShowClock) snap.ClockText = DateTime.Now.ToString("HH:mm");
             if (s != null && s.ShowGpu) FillGpuUsage(snap);
-            if (s != null && s.ShowTemp)
-            {
-                FillGpuTemp(snap);
-                FillCpuTemp(snap);
-            }
+            if (s != null && s.ShowGpuTemp) FillGpuTemp(snap);
+            if (s != null && s.ShowCpuTemp) FillCpuTemp(snap);
 
             ulong used, total;
             if (Gpu.TrySample(out used, out total))
@@ -446,9 +443,9 @@ namespace PerfOverlay.Services
         /// 第二级 PawnIO + AMDFamily17 读 SMN 寄存器（AMD 17h~1Ah 通用，要装一次驱动）。
         ///
         /// 「两级都失败」时把结论分成四类写进快照，UI 据此决定要不要给感叹号：
-        ///   not_installed —— 该装驱动（AMD 机器 + ACPI 不支持）
+        ///   not_installed —— 该装驱动（AMD / Intel 且 ACPI 不支持）
         ///   no_access     —— 驱动装好了，但当前不是管理员
-        ///   unsupported   —— 非 AMD，或者 ACPI 已经可用（不需要驱动）
+        ///   unsupported   —— 架构不在支持范围，或者 ACPI 已经可用（不需要驱动）
         ///   read_failed   —— 装了也读不到，属于真异常
         /// </summary>
         private void FillCpuTemp(MetricsSnapshot snap)

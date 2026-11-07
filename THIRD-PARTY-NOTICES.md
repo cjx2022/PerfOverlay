@@ -54,6 +54,18 @@ OR OTHER DEALINGS IN THE SOFTWARE.
 - 许可：**LGPL-2.1**，全文见 `LICENSES/LGPL-2.1-PawnIO-Modules.txt`。
   源码获取：<https://github.com/namazso/PawnIO.Modules>（同名 `AMDFamily17.p`）。
 
+## PawnIO 模块 `IntelMSR.bin`（用于 CPU 温度）
+
+- 用途：通过 PawnIO 驱动读 Intel 的 MSR —— `IA32_TEMPERATURE_TARGET`（`0x1A2`，取 TjMax）
+  与 `IA32_PACKAGE_THERM_STATUS`（`0x1B1`，取当前偏移），相减得到 CPU 封装温度（CT）。
+  只在用户主动安装温度组件、且处理器为 Intel Core（family 6）时才会被加载。
+- 来源：<https://github.com/namazso/PawnIO.Modules>（同一模块包 `release_0_2_11.zip`）
+- 二进制：`IntelMSR.bin`，5,324 字节，SHA-256
+  `D6ED85D65AB17A22F813EF98207D6D537155EE2DED5976A21CB48413C9B92E5F`
+- 分发方式：与 `AMDFamily17.bin` 相同 —— 嵌入资源打进 exe，程序目录下的同名 `.bin` 优先。
+- 许可：**LGPL-2.1**，全文见 `LICENSES/LGPL-2.1-PawnIO-Modules.txt`。
+  源码获取：<https://github.com/namazso/PawnIO.Modules>（同名 `IntelMSR.p`）。
+
 ### 关于 PawnIO 驱动本体
 
 驱动与官方安装器 `PawnIO_setup.exe` **不由本项目分发**：程序只会在用户点击「下载并安装」后

@@ -81,6 +81,19 @@ namespace PerfOverlay.Services
             w("存在: " + File.Exists(pm));
             w("");
 
+            // 0.9.5 把「温度 CT/GT」拆成两个开关：旧 settings.json 里只有 ShowTemp，
+            // 迁移必须在 Load 里完成，否则老用户升级后温度会凭空消失。
+            w("--- 配置（CT / GT 拆分迁移）---");
+            var cfg = SettingsStore.Load();
+            w(string.Format("SchemaVersion={0}  ShowCpuTemp={1}  ShowGpuTemp={2}  （旧字段 ShowTemp={3}）",
+                cfg.SchemaVersion, cfg.ShowCpuTemp, cfg.ShowGpuTemp, cfg.ShowTemp));
+            w("迁移结论: " + (cfg.SchemaVersion >= 1
+                ? (cfg.ShowCpuTemp || cfg.ShowGpuTemp
+                    ? "OK：旧配置里开着的温度已带到 CT/GT 两项"
+                    : "OK：旧配置没开温度，两项都是关")
+                : "FAIL：SchemaVersion 仍是 0，迁移没生效"));
+            w("");
+
             w("--- CPU ---");
             var sys = new SystemMetricsProvider();
             for (int i = 0; i < 3; i++)
@@ -175,9 +188,11 @@ namespace PerfOverlay.Services
             at.Dispose();
             w("");
 
-            w("--- CPU 温度 · 第二级：PawnIO + AMDFamily17（需安装） ---");
+            w("--- CPU 温度 · 第二级：PawnIO + 架构模块（需安装） ---");
             w("处理器: " + PawnIoCpuTemp.CpuSummary
-              + "  白名单命中: " + PawnIoCpuTemp.IsSupportedCpu);
+              + "  厂商: " + (PawnIoCpuTemp.Vendor.Length > 0 ? PawnIoCpuTemp.Vendor : "未知")
+              + "  路径: " + PawnIoCpuTemp.PathSummary);
+            w("白名单命中: " + PawnIoCpuTemp.IsSupportedCpu);
             w("服务已注册: " + PawnIoBridge.IsServiceRegistered());
             var pt = new PawnIoCpuTemp();
             bool ptOk = pt.Probe();

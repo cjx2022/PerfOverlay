@@ -270,6 +270,21 @@ namespace PerfOverlay.Services
             return true;
         }
 
+        /// <summary>
+        /// 读一个 MSR（走 IntelMSR 模块的 ioctl_read_msr）。模块内部有白名单，
+        /// 只放行 IA32_TEMPERATURE_TARGET / PACKAGE_THERM_STATUS / THERM_STATUS 等
+        /// 只读的性能与温度寄存器，写操作是另一个 ioctl，本程序从不调用。
+        /// </summary>
+        public bool TryReadMsr(uint index, out ulong value, out string why)
+        {
+            value = 0;
+            ulong[] o;
+            if (!TryExecute("ioctl_read_msr", new ulong[] { index }, 1, out o, out why))
+                return false;
+            value = o[0];
+            return true;
+        }
+
         public void Dispose()
         {
             if (_pciMutex != null)

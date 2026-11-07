@@ -82,8 +82,13 @@ namespace PerfOverlay.Views
 
         private static string BuildInstallText()
         {
-            return "Windows 用户态没有稳定的读 CPU 温度接口。你的处理器是 AMD，"
-                 + "封装温度只能从 SMN 寄存器里读，而这需要内核态驱动。\n\n"
+            string vendor = PawnIoCpuTemp.IsIntel ? "Intel" : "AMD";
+            string source = PawnIoCpuTemp.IsIntel
+                ? "目标温度与实测偏移只能从 MSR 寄存器（0x1A2 / 0x1B1）里读"
+                : "封装温度只能从 SMN 寄存器（0x00059800）里读";
+
+            return "Windows 用户态没有稳定的读 CPU 温度接口。你的处理器是 " + vendor + "，"
+                 + source + "，而这需要内核态驱动。\n\n"
                  + "本程序不带驱动（新建内核驱动必须由微软签名，要企业证书与审核流程）。"
                  + "改为引导安装 PawnIO：微软签名、内存完整性（HVCI）兼容、不在易受攻击驱动阻止列表里，"
                  + "装完约 1 MB，随时可以在「应用和功能」里正常卸载。\n\n"

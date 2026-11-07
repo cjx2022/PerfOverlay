@@ -60,7 +60,7 @@ namespace PerfOverlay.Services
         {
             var s = SettingsStore.Load();
             s.ShowCpu = s.ShowMemory = s.ShowFps = s.ShowLowFps = s.ShowVram = true;
-            s.ShowClock = s.ShowGpu = s.ShowTemp = true;
+            s.ShowClock = s.ShowGpu = s.ShowCpuTemp = s.ShowGpuTemp = true;
             s.SizeMode = "M";
             s.TextColor = "#FFFFFF";
             s.ShowOutline = true;
@@ -97,7 +97,7 @@ namespace PerfOverlay.Services
         {
             var s = SettingsStore.Load();
             s.ShowCpu = s.ShowMemory = s.ShowFps = s.ShowLowFps = s.ShowVram = true;
-            s.ShowClock = s.ShowGpu = s.ShowTemp = true;
+            s.ShowClock = s.ShowGpu = s.ShowCpuTemp = s.ShowGpuTemp = true;
 
             var w = new SettingsWindow();
             w.Bind(s);

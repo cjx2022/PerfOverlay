@@ -14,10 +14,10 @@
     <Platforms>x64</Platforms>
 
     <!-- 版本与署名 -->
-    <Version>0.9.6</Version>
-    <AssemblyVersion>0.9.6.0</AssemblyVersion>
-    <FileVersion>0.9.6.0</FileVersion>
-    <InformationalVersion>0.9.6</InformationalVersion>
+    <Version>0.9.5</Version>
+    <AssemblyVersion>0.9.5.0</AssemblyVersion>
+    <FileVersion>0.9.5.0</FileVersion>
+    <InformationalVersion>0.9.5</InformationalVersion>
     <AssemblyTitle>PerfOverlay 性能浮窗</AssemblyTitle>
     <Product>PerfOverlay</Product>
     <Description>轻量桌面性能浮窗：CPU / 内存 / 帧数 / 1% Low / 显存 / GPU / 温度 / 时间</Description>
@@ -77,6 +77,14 @@
       不依赖第二次网络请求 —— 国内访问 GitHub 本来就时好时坏。
     -->
     <EmbeddedResource Include="tools\AMDFamily17.bin" LogicalName="PerfOverlay.AMDFamily17.bin" />
+    <!--
+      IntelMSR：PawnIO 的官方 Intel 模块（5,324 B，同一 release）。
+      提供 ioctl_read_msr，白名单里包含 IA32_TEMPERATURE_TARGET(0x1A2)、
+      IA32_PACKAGE_THERM_STATUS(0x1B1)、IA32_THERM_STATUS(0x19C) 三个只读温度寄存器，
+      所以 Intel Core 走的是和 AMD 完全并列的一条路：同样的桥、同样的安装引导。
+      只在 CPU 是 Intel 且用户点了安装之后才加载，AMD 机器上永远不会碰到它。
+    -->
+    <EmbeddedResource Include="tools\IntelMSR.bin" LogicalName="PerfOverlay.IntelMSR.bin" />
   </ItemGroup>
 
 </Project>

@@ -67,7 +67,7 @@ namespace PerfOverlay.Services
         ///   ready        —— 装好了、有权限、而且真的读出了温度
         ///   no_access    —— 装好了，但当前不是管理员
         ///   not_installed—— 没装
-        ///   unsupported  —— 非 AMD 17h~1Ah，这条路本来就用不上
+        ///   unsupported  —— 架构不在支持范围（AMD 非 17h~1Ah、且不是 Intel Core）
         /// 注意「设备能打开」不等于「能读温度」：驱动在但模块调不通时也要如实报出来，
         /// 所以这里用 Probe()（会真的读一次 SMN），不用 CanOpenDevice。
         /// </summary>

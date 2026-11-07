@@ -6,7 +6,7 @@ using Microsoft.Win32;
 namespace PerfOverlay.Services
 {
     /// <summary>
-    /// CPU 温度的第二级路径：PawnIO 驱动 + AMDFamily17 模块读 SMN。
+    /// CPU 温度的第二级路径：PawnIO 驱动 + 架构对应模块（AMD 读 SMN、Intel 读 MSR）。
     ///
     /// 为什么必须走到内核：Windows 用户态没有任何稳定的读 CPU 温度接口，
     /// ACPI 热区（AcpiTempProbe）有没有值全看 BIOS 有没有实现 _TZ，台式 DIY 板子
@@ -28,13 +28,21 @@ namespace PerfOverlay.Services
     /// </summary>
     public sealed class PawnIoCpuTemp : IDisposable
     {
-        private const string ModuleResource = "PerfOverlay.AMDFamily17.bin";
-        private const string ModuleName = "AMDFamily17.bin";
+        // ---- 模块：AMD 与 Intel 各一个，都来自 PawnIO.Modules 官方发布 ----
+        private const string AmdModuleResource = "PerfOverlay.AMDFamily17.bin";
+        private const string AmdModuleName = "AMDFamily17.bin";
+        private const string IntelModuleResource = "PerfOverlay.IntelMSR.bin";
+        private const string IntelModuleName = "IntelMSR.bin";
 
         /// <summary>THM_TCON_CUR_TMP：AMD 从 17h 到 1Ah 都用这一个地址报封装温度。</summary>
         private const uint ThmTconCurTmp = 0x00059800;
         private const uint RangeSelMask = 0x00080000;
         private const uint TjSelMask = 0x00030000;
+
+        // Intel：0x1A2 给出 TjMax，0x1B1 给出「距 TjMax 还有多少度」，相减即得封装温度。
+        // 两个都在 IntelMSR 模块的只读白名单里，不需要任何写操作。
+        private const uint MsrTemperatureTarget = 0x000001A2;   // IA32_TEMPERATURE_TARGET
+        private const uint MsrPackageThermStatus = 0x000001B1;  // IA32_PACKAGE_THERM_STATUS
 
         private PawnIoBridge _io;
         private bool _moduleLoaded;
@@ -57,10 +65,26 @@ namespace PerfOverlay.Services
         public static int CpuFamily { get; private set; }
         public static int CpuModel { get; private set; }
         public static string CpuName { get; private set; }
+        public static string Vendor { get; private set; }
+
+        /// <summary>Intel 处理器的 family 恒为 6（0x06），与 AMD 的 17h~1Ah 不重叠。</summary>
+        public static bool IsIntel
+        {
+            get { return Vendor.Length > 0 && Vendor.IndexOf("Intel", StringComparison.OrdinalIgnoreCase) >= 0; }
+        }
+
+        public static bool IsAmd
+        {
+            get { return Vendor.Length > 0 && Vendor.IndexOf("AMD", StringComparison.OrdinalIgnoreCase) >= 0; }
+        }
+
+        private static string ModuleResource { get { return IsIntel ? IntelModuleResource : AmdModuleResource; } }
+        private static string ModuleName { get { return IsIntel ? IntelModuleName : AmdModuleName; } }
 
         static PawnIoCpuTemp()
         {
             CpuName = "";
+            Vendor = "";
             try
             {
                 using (var k = Registry.LocalMachine.OpenSubKey(
@@ -70,7 +94,9 @@ namespace PerfOverlay.Services
                     {
                         object id = k.GetValue("Identifier");
                         object nm = k.GetValue("ProcessorNameString");
+                        object vd = k.GetValue("VendorIdentifier");
                         if (nm != null) CpuName = nm.ToString().Trim();
+                        if (vd != null) Vendor = vd.ToString().Trim();
                         if (id != null) ParseIdentifier(id.ToString());
                     }
                 }
@@ -93,10 +119,29 @@ namespace PerfOverlay.Services
             }
         }
 
-        /// <summary>模块内部白名单是 17h~1Ah；不在这区间就别去麻烦驱动了。</summary>
+        /// <summary>
+        /// AMD 的 SMN 路径只覆盖 17h~1Ah（模块内部白名单），Intel 走 MSR 则任意
+        /// Core 架构都可以（family 恒为 6）。两条路都是「装上驱动就能读」。
+        /// </summary>
         public static bool IsSupportedCpu
         {
-            get { return CpuFamily >= 0x17 && CpuFamily <= 0x1A; }
+            get
+            {
+                if (IsAmd) return CpuFamily >= 0x17 && CpuFamily <= 0x1A;
+                if (IsIntel) return CpuFamily == 0x06;
+                return false;
+            }
+        }
+
+        /// <summary>给文案用的一句话：AMD 走 SMN、Intel 走 MSR，用户看到的原因才具体。</summary>
+        public static string PathSummary
+        {
+            get
+            {
+                if (IsIntel) return "Intel MSR（0x1A2 TjMax / 0x1B1 读数）";
+                if (IsAmd) return "AMD SMN（0x00059800）";
+                return "未知架构";
+            }
         }
 
         public static string CpuSummary
@@ -125,7 +170,7 @@ namespace PerfOverlay.Services
 
             if (!IsSupportedCpu)
             {
-                _why = "当前处理器不在 AMD 17h~1Ah 范围内（" + CpuSummary + "），不走这条路";
+                _why = "当前处理器架构不在支持范围内（" + CpuSummary + "），这条路不适用";
                 DriverState = "not_applicable";
                 return false;
             }
@@ -221,6 +266,15 @@ namespace PerfOverlay.Services
 
         private bool ReadOnce(out double celsius, out string why)
         {
+            return IsIntel ? ReadIntel(out celsius, out why) : ReadAmd(out celsius, out why);
+        }
+
+        /// <summary>
+        /// AMD：SMN 0x00059800 的 bits 21+ 是 0.125℃ 单位的温度，
+        /// 部分型号带 49℃ 偏移（由 RangeSel / TjSel 两个位标记）。
+        /// </summary>
+        private bool ReadAmd(out double celsius, out string why)
+        {
             celsius = 0;
 
             uint raw;
@@ -239,6 +293,51 @@ namespace PerfOverlay.Services
             {
                 celsius = 0;
                 why = string.Format("读数不合理（raw=0x{0:X8} → {1:0.0}℃），已丢弃", raw, t);
+                return false;
+            }
+
+            celsius = t;
+            why = "";
+            return true;
+        }
+
+        /// <summary>
+        /// Intel：0x1A2 的 bits 16-23 是 TjMax，0x1B1 的 bits 16-22 是「距 TjMax 的度数」，
+        /// bit 31 是读数有效位。两者相减即封装温度。这台机器上没验证过（本机是 AMD），
+        /// 所以 TjMax 与结果都设了闸门，宁可显示 -- 也不出错数。
+        /// </summary>
+        private bool ReadIntel(out double celsius, out string why)
+        {
+            celsius = 0;
+
+            ulong target, status;
+            if (!_io.TryReadMsr(MsrTemperatureTarget, out target, out why)) return false;
+            if (!_io.TryReadMsr(MsrPackageThermStatus, out status, out why)) return false;
+
+            int tjMax = (int)((target >> 16) & 0xFF);
+
+            // TjMax 只在 60~120 之间有物理意义；读到 0 或 255 说明这颗处理器
+            // 不通过 0x1A2 报目标温度（很老的平台就是这种表现），换算不出温度。
+            if (tjMax < 60 || tjMax > 120)
+            {
+                why = string.Format("处理器没有通过 MSR 0x1A2 报告 TjMax（读到 {0}），无法换算温度", tjMax);
+                return false;
+            }
+
+            if ((status & 0x80000000UL) == 0)
+            {
+                why = "MSR 0x1B1 的温度读数无效（有效位为 0），可能是虚拟机或传感器被禁用";
+                return false;
+            }
+
+            int offset = (int)((status >> 16) & 0x7F);
+            double t = tjMax - offset;
+
+            if (t < 5.0 || t > 125.0)
+            {
+                celsius = 0;
+                why = string.Format("读数不合理（TjMax {0} - 偏移 {1} → {2:0.0}℃），已丢弃",
+                    tjMax, offset, t);
                 return false;
             }
 

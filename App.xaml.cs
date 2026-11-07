@@ -646,11 +646,18 @@ namespace PerfOverlay
 
             bool colA = true, colB = true, rowsTied = true, textFits = true;
             var tight = new StringBuilder();
-            for (int i = 0; i < 4 && i + 4 < mbRect.Length; i++)
+            // 拆出 CT/GT 之后是 9 项：左列 4 项、右列 5 项。行对齐只比左列有的那 4 行，
+            // 右列多出来的第 5 项单独校验它是否仍在同一竖直线上。
+            const int leftCol = 4;
+            for (int i = 0; i < leftCol && i + leftCol < mbRect.Length; i++)
             {
                 if (Math.Abs(mbRect[i].Left - mbRect[0].Left) > 0.5) colA = false;
-                if (Math.Abs(mbRect[i + 4].Left - mbRect[4].Left) > 0.5) colB = false;
-                if (Math.Abs(mbRect[i].Top - mbRect[i + 4].Top) > 0.5) rowsTied = false;
+                if (Math.Abs(mbRect[i + leftCol].Left - mbRect[leftCol].Left) > 0.5) colB = false;
+                if (Math.Abs(mbRect[i].Top - mbRect[i + leftCol].Top) > 0.5) rowsTied = false;
+            }
+            for (int i = leftCol; i < mbRect.Length; i++)
+            {
+                if (Math.Abs(mbRect[i].Left - mbRect[leftCol].Left) > 0.5) colB = false;
             }
             for (int i = 0; i < metricBoxes.Length; i++)
             {
@@ -666,7 +673,7 @@ namespace PerfOverlay
                 if (mbRect[i].Left < rects[0].Left - 0.5 || mbRect[i].Right > rects[0].Right + 0.5) textFits = false;
             }
             // 列间要有实际空隙：贴在一起就等于没有分栏
-            double colGapDip = mbRect[4].Left - mbRect[0].Right;
+            double colGapDip = mbRect[leftCol].Left - mbRect[0].Right;
             bool colsApart = colGapDip >= 8.0;
             bool metricsOk = colA && colB && rowsTied && colsApart && textFits;
             if (!metricsOk) fails++;
@@ -1111,7 +1118,7 @@ namespace PerfOverlay
                     sb.AppendLine("  → 设置面板会显示感叹号，点击进入安装引导");
                     break;
                 default:
-                    sb.AppendLine("  → 非 AMD 17h~1Ah，这条路用不上；CT 只能靠 ACPI");
+                    sb.AppendLine("  → 处理器架构不在支持范围（AMD 需 17h~1Ah、Intel 需 Core），CT 只能靠 ACPI");
                     break;
             }
 
@@ -1334,7 +1341,7 @@ namespace PerfOverlay
             {
                 var s = SettingsStore.Load();
                 s.ShowCpu = s.ShowMemory = s.ShowFps = s.ShowLowFps = s.ShowVram = true;
-                s.ShowClock = s.ShowGpu = s.ShowTemp = true;   // 全开才量得到最宽的极端情况
+                s.ShowClock = s.ShowGpu = s.ShowCpuTemp = s.ShowGpuTemp = true;   // 全开才量得到最宽的极端情况
                 s.SizeMode = size;
                 s.OffsetX = s.OffsetY = 0;
 
@@ -1470,7 +1477,7 @@ namespace PerfOverlay
                 || cfg.ShowFps != _settings.ShowFps || cfg.ShowLowFps != _settings.ShowLowFps
                 || cfg.ShowVram != _settings.ShowVram
                 || cfg.ShowClock != _settings.ShowClock || cfg.ShowGpu != _settings.ShowGpu
-                || cfg.ShowTemp != _settings.ShowTemp
+                || cfg.ShowCpuTemp != _settings.ShowCpuTemp || cfg.ShowGpuTemp != _settings.ShowGpuTemp
                 || cfg.SizeMode != _settings.SizeMode
                 || cfg.TextColor != _settings.TextColor
                 || cfg.ShowOutline != _settings.ShowOutline;

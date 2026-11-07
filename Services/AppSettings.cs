@@ -23,7 +23,19 @@ namespace PerfOverlay.Services
         // 正好等于「默认关闭」；以后若要加默认开启的字段，必须在 Load 之后做版本迁移。
         [DataMember(Order = 22)] public bool ShowClock = false;   // 时间（时:分）
         [DataMember(Order = 23)] public bool ShowGpu = false;     // GPU 利用率
-        [DataMember(Order = 24)] public bool ShowTemp = false;    // GPU 温度
+
+        /// <summary>
+        /// 旧版的合并开关「温度 CT/GT」。0.9.5 起拆成 CT / GT 两个独立开关，
+        /// 这个字段只为迁移旧配置而保留：Load 时若 SchemaVersion 还是 0，
+        /// 会把它的值分给下面两项，用户升级后不会莫名其妙丢掉温度显示。
+        /// </summary>
+        [DataMember(Order = 24)] public bool ShowTemp = false;
+
+        [DataMember(Order = 25)] public bool ShowCpuTemp = false;  // CT：CPU 温度
+        [DataMember(Order = 26)] public bool ShowGpuTemp = false;  // GT：GPU 温度
+
+        /// <summary>配置结构版本。1 = CT/GT 已拆分。新对象直接是 1，旧文件读出来是 0。</summary>
+        [DataMember(Order = 27)] public int SchemaVersion = 1;
 
         // ---- 外观 ----
         [DataMember(Order = 6)] public int RefreshMs = 500;
@@ -99,13 +111,30 @@ namespace PerfOverlay.Services
         public bool AnyMetricVisible()
         {
             return ShowCpu || ShowMemory || ShowFps || ShowLowFps || ShowVram
-                || ShowClock || ShowGpu || ShowTemp;
+                || ShowClock || ShowGpu || ShowCpuTemp || ShowGpuTemp;
         }
 
-        /// <summary>是否需要向 nvml.dll 要数据（温度与 GPU 利用率共用一份句柄）。</summary>
+        /// <summary>是否需要向 nvml.dll 要数据（GPU 温度与 GPU 利用率共用一份句柄）。</summary>
         public bool NeedsGpuProbe()
         {
-            return ShowGpu || ShowTemp;
+            return ShowGpu || ShowGpuTemp;
+        }
+
+        /// <summary>
+        /// 旧配置迁移。DataContractJsonSerializer 不使用构造函数，缺字段一律取类型默认值，
+        /// 所以「旧文件」和「新对象」只能靠 SchemaVersion 区分。
+        /// </summary>
+        internal static AppSettings Migrate(AppSettings s)
+        {
+            if (s.SchemaVersion < 1)
+            {
+                // 0.9.5 之前温度是一个开关：拆开后两项都跟随旧值，
+                // 这样升级不会让用户之前开着的温度凭空消失。
+                s.ShowCpuTemp = s.ShowTemp;
+                s.ShowGpuTemp = s.ShowTemp;
+                s.SchemaVersion = 1;
+            }
+            return s;
         }
     }
 
@@ -159,7 +188,7 @@ namespace PerfOverlay.Services
                     using (var fs = File.OpenRead(FilePath))
                     {
                         var s = (AppSettings)Ser.ReadObject(fs);
-                        if (s != null) return s;
+                        if (s != null) return AppSettings.Migrate(s);
                     }
                 }
             }

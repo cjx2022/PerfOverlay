@@ -153,8 +153,8 @@ namespace PerfOverlay.Views
             if (_settings.ShowVram) items.Add(new[] { "vram", "VRAM", "100%" });
             if (_settings.ShowGpu) items.Add(new[] { "gpu", "GPU", "100%" });
             // CT = CPU 温度，GT = GPU 温度：两个字足够表意，又不占宽度
-            if (_settings.ShowTemp) items.Add(new[] { "ct", "CT", "100°" });
-            if (_settings.ShowTemp) items.Add(new[] { "gt", "GT", "100°" });
+            if (_settings.ShowCpuTemp) items.Add(new[] { "ct", "CT", "100°" });
+            if (_settings.ShowGpuTemp) items.Add(new[] { "gt", "GT", "100°" });
 
             bool clockShown = _settings.ShowClock;
             for (int i = 0; i < items.Count; i++)
@@ -383,15 +383,21 @@ namespace PerfOverlay.Views
                     s.GpuOk ? s.GpuDetail
                             : (string.IsNullOrEmpty(s.GpuDetail) ? "GPU 利用率不可用" : s.GpuDetail));
 
-            if (_settings.ShowTemp)
+            if (_settings.ShowCpuTemp)
             {
                 // CT = CPU 温度；读不到就把原因挂在 tooltip 上，别只留一个哑的 N/A
                 Set("ct", s.TempCpuOk ? FormatTemp(s.TempCpuC) : null,
                     s.TempCpuOk ? s.TempCpuDetail
-                                : (string.IsNullOrEmpty(s.TempCpuDetail) ? "CPU 温度不可用" : s.TempCpuDetail));
+                                : (string.IsNullOrEmpty(s.TempCpuDetail) ? "CPU 温度不可用" : s.TempCpuDetail),
+                    "--");
+            }
+
+            if (_settings.ShowGpuTemp)
+            {
                 Set("gt", s.TempGpuOk ? FormatTemp(s.TempGpuC) : null,
                     s.TempGpuOk ? s.TempGpuDetail
-                                : (string.IsNullOrEmpty(s.TempGpuDetail) ? "GPU 温度不可用" : s.TempGpuDetail));
+                                : (string.IsNullOrEmpty(s.TempGpuDetail) ? "GPU 温度不可用" : s.TempGpuDetail),
+                    "--");
             }
         }
 
@@ -407,12 +413,21 @@ namespace PerfOverlay.Views
 
         private void Set(string key, string text, string tooltip)
         {
+            Set(key, text, tooltip, "N/A");
+        }
+
+        /// <summary>
+        /// placeholder 是数值缺失时的占位。温度用 "--"：安装引导的文案里承诺的就是
+        /// 「不装也不影响其它指标，CT 显示 --」，界面不该写成 N/A 跟文案打架。
+        /// </summary>
+        private void Set(string key, string text, string tooltip, string placeholder)
+        {
             GroupUi g;
             if (!_groups.TryGetValue(key, out g)) return;
 
             // 三项都先判等再赋值。Opacity / ToolTip 原来是无条件写，
             // 每 0.5 秒就把所有依赖属性刷一遍 —— 值没变却白白触发属性变更通知。
-            string show = string.IsNullOrEmpty(text) ? "N/A" : text;
+            string show = string.IsNullOrEmpty(text) ? placeholder : text;
             bool changed = g.Value.Text != show;
             if (changed) g.Value.Text = show;
 
