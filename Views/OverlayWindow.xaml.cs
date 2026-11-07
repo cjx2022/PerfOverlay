@@ -94,7 +94,16 @@ namespace PerfOverlay.Views
             _settings = s;
             Opacity = Math.Max(0.3, Math.Min(1.0, s.Opacity));
 
-            if (rebuildRows) BuildGroups();
+            if (rebuildRows)
+            {
+                BuildGroups();
+                // 开关显示项 = 行重建 = 宽度变。SizeToContent 固定左上角往右长，
+                // 贴角的浮窗会被顶出屏幕外。这里同步把布局跑完拿到新宽度，
+                // 再按当前档位执行一次贴角 —— 等于自动替用户点了一下复位按钮。
+                UpdateLayout();
+                int mode = CurrentAlignMode();
+                if (mode >= 0) AlignHorizontal(mode);
+            }
 
             ApplyWindowStyle();
             Reposition();
