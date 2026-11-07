@@ -558,6 +558,44 @@ namespace PerfOverlay
             bool btnsOk = squeezed == 0 && overflow == 0;
             if (!btnsOk) fails++;
 
+            // 「显示项目」两列布局：列内左对齐、左右同一行顶对齐、两列不重叠、
+            // 每个开关的文字都放得下（Switch 模板固定占 40 DIP 轨道 + 12 DIP 内边距）。
+            // 只看截图容易漏掉「文字被压窄一点点」这种问题，这里按 rect 与实测字宽断言。
+            var metricBoxes = w.MetricSwitches();
+            var mbRect = new System.Windows.Rect[metricBoxes.Length];
+            for (int i = 0; i < metricBoxes.Length; i++)
+            {
+                var p = metricBoxes[i].TranslatePoint(new System.Windows.Point(0, 0), w);
+                mbRect[i] = new System.Windows.Rect(p.X, p.Y, metricBoxes[i].ActualWidth, metricBoxes[i].ActualHeight);
+            }
+
+            bool colA = true, colB = true, rowsTied = true, textFits = true;
+            var tight = new StringBuilder();
+            for (int i = 0; i < 4 && i + 4 < mbRect.Length; i++)
+            {
+                if (Math.Abs(mbRect[i].Left - mbRect[0].Left) > 0.5) colA = false;
+                if (Math.Abs(mbRect[i + 4].Left - mbRect[4].Left) > 0.5) colB = false;
+                if (Math.Abs(mbRect[i].Top - mbRect[i + 4].Top) > 0.5) rowsTied = false;
+            }
+            for (int i = 0; i < metricBoxes.Length; i++)
+            {
+                var cb = metricBoxes[i] as System.Windows.Controls.CheckBox;
+                string label = (cb == null || cb.Content == null) ? "" : cb.Content.ToString();
+                double avail = mbRect[i].Width - 40 - 12;
+                double needW = TextWidthDip(label, 13, FontWeights.Normal);
+                if (needW > avail + 0.5)
+                {
+                    textFits = false;
+                    tight.Append(string.Format("{0}({1:0.0}>{2:0.0}) ", label, needW, avail));
+                }
+                if (mbRect[i].Left < rects[0].Left - 0.5 || mbRect[i].Right > rects[0].Right + 0.5) textFits = false;
+            }
+            // 列间要有实际空隙：贴在一起就等于没有分栏
+            double colGapDip = mbRect[4].Left - mbRect[0].Right;
+            bool colsApart = colGapDip >= 8.0;
+            bool metricsOk = colA && colB && rowsTied && colsApart && textFits;
+            if (!metricsOk) fails++;
+
             sb.AppendLine("== 设置面板 ==");
             sb.AppendLine(string.Format("   窗口      = {0:0.0} x {1:0.0} DIP", winW, winH));
             sb.AppendLine(string.Format("   内容需要  = {0:0.0} x {1:0.0} DIP", need.Width, need.Height));
@@ -586,6 +624,10 @@ namespace PerfOverlay
             sb.AppendLine(string.Format("   全部按钮  = {0} 个，压缩 {1} / 越界 {2} => {3}",
                 btnChecked, squeezed, overflow, btnsOk ? "OK" : "FAIL"));
             if (!btnsOk && badBtns.Length > 0) sb.AppendLine("     明细：" + badBtns.ToString().Trim());
+            sb.AppendLine(string.Format("   显示项目两列 = 左列对齐 {0} / 右列对齐 {1} / 同行顶对齐 {2} / 列间 {3:0.0} DIP / 文字够 {4} => {5}",
+                colA ? "OK" : "FAIL", colB ? "OK" : "FAIL", rowsTied ? "OK" : "FAIL",
+                colGapDip, textFits ? "OK" : "FAIL", metricsOk ? "OK" : "FAIL"));
+            if (!textFits && tight.Length > 0) sb.AppendLine("     放不下：" + tight.ToString().Trim());
             sb.AppendLine();
 
             w.CloseForShutdown();
@@ -598,6 +640,24 @@ namespace PerfOverlay
             catch (Exception) { }
 
             Shutdown(fails == 0 ? 0 : 2);
+        }
+
+        /// <summary>诊断用：按 WPF 的排版结果量一段文字的真实宽度（DIP）。</summary>
+        private static double TextWidthDip(string text, double fontSize, FontWeight weight)
+        {
+            try
+            {
+                var tf = new System.Windows.Media.Typeface(new System.Windows.Media.FontFamily("Segoe UI, Microsoft YaHei UI"),
+                                      FontStyles.Normal, weight, FontStretches.Normal);
+                var ft = new System.Windows.Media.FormattedText(text ?? "", System.Globalization.CultureInfo.CurrentUICulture,
+                                           FlowDirection.LeftToRight, tf, fontSize,
+                                           System.Windows.Media.Brushes.Black, 1.0);
+                return ft.WidthIncludingTrailingWhitespace;
+            }
+            catch (Exception)
+            {
+                return (text == null ? 0 : text.Length) * fontSize * 0.62;
+            }
         }
 
         /// <summary>
@@ -918,6 +978,8 @@ namespace PerfOverlay
                 || cfg.ShowCpu != _settings.ShowCpu || cfg.ShowMemory != _settings.ShowMemory
                 || cfg.ShowFps != _settings.ShowFps || cfg.ShowLowFps != _settings.ShowLowFps
                 || cfg.ShowVram != _settings.ShowVram
+                || cfg.ShowClock != _settings.ShowClock || cfg.ShowGpu != _settings.ShowGpu
+                || cfg.ShowTemp != _settings.ShowTemp
                 || cfg.SizeMode != _settings.SizeMode
                 || cfg.TextColor != _settings.TextColor
                 || cfg.ShowOutline != _settings.ShowOutline;
@@ -1099,7 +1161,8 @@ namespace PerfOverlay
             _trayIcon = LoadIcon(out _trayIconOwned);
             _tray = new Forms.NotifyIcon
             {
-                Text = "性能浮窗",
+                // 托盘提示里也带版本号：装了两份 exe 时靠这个分清在跑哪一个
+                Text = "PerfOverlay v" + UpdateChecker.CurrentVersion,
                 Icon = _trayIcon,
                 Visible = _settings.ShowTrayIcon
             };

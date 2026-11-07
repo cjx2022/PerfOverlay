@@ -24,6 +24,17 @@ namespace PerfOverlay.Services
         public ulong VramUsed;
         public ulong VramBudget;
         public bool VramOk;
+
+        // ---- 0.9.4 新增（默认关闭）----
+        /// <summary>时:分。空串表示不显示时间。</summary>
+        public string ClockText = "";
+        public double GpuPercent;
+        public bool GpuOk;
+        public double TempCelsius;
+        public bool TempOk;
+        /// <summary>温度项的 tooltip：说明这一格是哪个传感器、为什么别的不显示。</summary>
+        public string TempDetail = "";
+        public string GpuDetail = "";
     }
 
     /// <summary>
@@ -40,6 +51,9 @@ namespace PerfOverlay.Services
         public readonly SystemMetricsProvider Sys = new SystemMetricsProvider();
         public readonly GpuMemoryProbe Gpu = new GpuMemoryProbe();
         public readonly PresentMonEngine Frames;
+
+        // NVML 只在「温度」或「GPU 利用率」开着时才加载，两个开关都关掉就把 dll 也退掉。
+        private NvmlProbe _nvml;
 
         private bool _framesStarted;
         private string _framesWhy = "";
@@ -140,6 +154,9 @@ namespace PerfOverlay.Services
 
                     if (tick % 20 == 0) Frames.SweepQueues();
 
+                    // 温度 / GPU 利用率：开关关着就什么都不做（连 dll 都不加载）
+                    EnsureGpuProbe(s);
+
                     // PresentMon 进程必须能自愈：它可能因为会话被顶掉、被外部杀掉、
                     // 或启动瞬间失败而消失。原来的实现只在 Start() 里拉一次，
                     // 之后进程没了就永远显示 N/A，而且没有任何线索。
@@ -166,6 +183,29 @@ namespace PerfOverlay.Services
             }
         }
 
+        /// <summary>
+        /// 按开关管理 NVML 生命周期：开任一（温度/GPU 利用率）才加载，
+        /// 两个都关就 Dispose 把 dll 退掉 —— 「默认关闭不占内存」不是口号，
+        /// 关掉后进程里不应该留下 nvml.dll 和它的显存句柄。
+        /// </summary>
+        private void EnsureGpuProbe(AppSettings s)
+        {
+            if (s == null) return;
+
+            if (!s.NeedsGpuProbe())
+            {
+                if (_nvml != null)
+                {
+                    _nvml.Dispose();
+                    _nvml = null;
+                }
+                return;
+            }
+
+            if (_nvml == null) _nvml = new NvmlProbe();
+            _nvml.EnsureInit();
+        }
+
         private MetricsSnapshot Build(AppSettings s)
         {
             var snap = new MetricsSnapshot
@@ -176,6 +216,9 @@ namespace PerfOverlay.Services
                 MemoryUsed = Sys.MemoryUsedBytes,
                 MemoryTotal = Sys.MemoryTotalBytes
             };
+
+            if (s != null && s.ShowClock) snap.ClockText = DateTime.Now.ToString("HH:mm");
+            if (s != null && s.NeedsGpuProbe()) FillNvml(snap);
 
             ulong used, total;
             if (Gpu.TrySample(out used, out total))
@@ -197,6 +240,37 @@ namespace PerfOverlay.Services
             if (!snap.FpsOk && snap.FpsMessage.Length == 0) snap.FpsMessage = FramesDiagnostic;
 
             return snap;
+        }
+
+        /// <summary>NVML 一次调用同时给温度和利用率，两个开关谁开都要这份数据。</summary>
+        private void FillNvml(MetricsSnapshot snap)
+        {
+            if (_nvml == null) return;
+
+            double temp, util;
+            bool tempOk, utilOk;
+            if (!_nvml.TryRead(out temp, out util, out tempOk, out utilOk))
+            {
+                // 读不到就把原因带到 tooltip 上，别只留一个哑的 N/A
+                string why = _nvml.Status;
+                snap.GpuDetail = why;
+                snap.TempDetail = why;
+                return;
+            }
+
+            if (utilOk)
+            {
+                snap.GpuOk = true;
+                snap.GpuPercent = util;
+                snap.GpuDetail = (_nvml.DeviceName.Length > 0 ? _nvml.DeviceName + " 整体利用率" : "GPU 整体利用率");
+            }
+
+            if (tempOk)
+            {
+                snap.TempOk = true;
+                snap.TempCelsius = temp;
+                snap.TempDetail = (_nvml.DeviceName.Length > 0 ? _nvml.DeviceName + " 核心温度" : "GPU 核心温度");
+            }
         }
 
         /// <summary>PresentMon 掉了就拉起来，每 5 秒最多试一次（由调用点的 tick 控制）。</summary>
@@ -273,6 +347,7 @@ namespace PerfOverlay.Services
             Stop();
             Frames.Dispose();
             Gpu.Dispose();
+            if (_nvml != null) { _nvml.Dispose(); _nvml = null; }
         }
 
         /// <summary>

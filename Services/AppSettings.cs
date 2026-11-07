@@ -18,6 +18,13 @@ namespace PerfOverlay.Services
         [DataMember(Order = 4)] public bool ShowLowFps = true;
         [DataMember(Order = 5)] public bool ShowVram = true;
 
+        // 0.9.4 新增三项：默认关闭，关闭时连采样器都不初始化（不占资源）。
+        // 注意 DataContractJsonSerializer 反序列化不走构造函数，缺字段时取类型默认值 false，
+        // 正好等于「默认关闭」；以后若要加默认开启的字段，必须在 Load 之后做版本迁移。
+        [DataMember(Order = 22)] public bool ShowClock = false;   // 时间（时:分）
+        [DataMember(Order = 23)] public bool ShowGpu = false;     // GPU 利用率
+        [DataMember(Order = 24)] public bool ShowTemp = false;    // GPU 温度
+
         // ---- 外观 ----
         [DataMember(Order = 6)] public int RefreshMs = 500;
         [DataMember(Order = 7)] public double Opacity = 1.0;
@@ -91,7 +98,14 @@ namespace PerfOverlay.Services
 
         public bool AnyMetricVisible()
         {
-            return ShowCpu || ShowMemory || ShowFps || ShowLowFps || ShowVram;
+            return ShowCpu || ShowMemory || ShowFps || ShowLowFps || ShowVram
+                || ShowClock || ShowGpu || ShowTemp;
+        }
+
+        /// <summary>是否需要向 nvml.dll 要数据（温度与 GPU 利用率共用一份句柄）。</summary>
+        public bool NeedsGpuProbe()
+        {
+            return ShowGpu || ShowTemp;
         }
     }
 

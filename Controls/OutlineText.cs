@@ -143,6 +143,13 @@ namespace PerfOverlay.Controls
 
         protected override void OnRender(DrawingContext dc)
         {
+            // 浮窗是 AllowsTransparency 的分层窗口，WPF 只把「脏区」贴到屏幕上。
+            // 数值从 N/A 变成 "22%" 时，旧字形轮廓（尤其是描边外扩的那一圈）会有一部分
+            // 落在脏区之外，于是屏幕上留下碎块 —— 实测表现为项与项之间凭空出现小方框和斜线，
+            // 用 PrintWindow 抓窗口却是干净的（视觉树对、合成结果错）。
+            // 显式铺一层透明矩形把整块控件纳入重绘范围，旧像素就会被真正擦掉。
+            dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, ActualWidth, ActualHeight));
+
             if (string.IsNullOrEmpty(Text)) return;
 
             double ppd = 1.0;

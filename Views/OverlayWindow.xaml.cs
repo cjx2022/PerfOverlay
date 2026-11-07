@@ -108,10 +108,10 @@ namespace PerfOverlay.Views
             double fs = _settings.FontSizeMain;
             // 标签与数值的间隙：0.34 偏松（"FPS   60" 中间能塞进两个字），收到 0.22
             double labelGap = Math.Round(fs * 0.22);
-            // 组间距：0.9 字高时 "FPS 60" 与 "low(1%) 12" 之间能塞进半个词，收到 0。
-            // 数值控件本身是定宽（防抖），"N/A" 填不满时尾部会留出约 0.8 字高的空白，
-            // 组间视觉空隙最终仍明显大于组内的 labelGap，两组不会糊在一起。
-            double groupGap = 0;
+            // 组间距：早先设 0，靠数值控件的定宽余量当间隙，5 项时看着够用；
+            // 加到 8 项后时间（"21:45" 几乎填满自己的格子）与 FPS 会贴在一起读成一串。
+            // 改成显式 0.28 字高（M 号 = 5 DIP）：给出稳定的呼吸感，又不至于把整行拉长。
+            double groupGap = Math.Round(fs * 0.28);
 
             // 颜色与描边：描边关掉时 strokeW=0，宽度和绘制都不再预留外扩空间
             Color textColor = ParseColor(_settings.TextColor);
@@ -125,19 +125,28 @@ namespace PerfOverlay.Views
                 Math.Max(TextWidth("100%", fs, FontWeights.SemiBold), TextWidth("240", fs, FontWeights.SemiBold)),
                 fs * 2.4)) + strokeW;
 
+            // 每一项自带「数值宽度模板」：按该项上限定宽，既防抖动，又不会让
+            // "144" 在按 100% 定的格子里右端空出一大截、把组间空隙撑得忽大忽小。
+            // 时间 5 个字符比其它项宽，单独给模板，否则会被裁掉尾部。
+            // 时间排在行首：它是最"外部"的信息，插在性能指标中间反而打断阅读。
             var items = new List<string[]>();
-            if (_settings.ShowFps) items.Add(new[] { "fps", "FPS" });
+            if (_settings.ShowClock) items.Add(new[] { "time", "TIME", "88:88" });
+            if (_settings.ShowFps) items.Add(new[] { "fps", "FPS", "888" });
             // 标签文案：low(1%) 比裸 LOW 更说清口径
-            if (_settings.ShowLowFps) items.Add(new[] { "low", "low(1%)" });
-            if (_settings.ShowCpu) items.Add(new[] { "cpu", "CPU" });
-            if (_settings.ShowMemory) items.Add(new[] { "mem", "MEM" });
-            if (_settings.ShowVram) items.Add(new[] { "vram", "VRAM" });
+            if (_settings.ShowLowFps) items.Add(new[] { "low", "low(1%)", "888" });
+            if (_settings.ShowCpu) items.Add(new[] { "cpu", "CPU", "100%" });
+            if (_settings.ShowMemory) items.Add(new[] { "mem", "MEM", "100%" });
+            if (_settings.ShowVram) items.Add(new[] { "vram", "VRAM", "100%" });
+            if (_settings.ShowGpu) items.Add(new[] { "gpu", "GPU", "100%" });
+            if (_settings.ShowTemp) items.Add(new[] { "temp", "TEMP", "100°" });
 
             for (int i = 0; i < items.Count; i++)
             {
                 bool isLast = i == items.Count - 1;
                 double labelW = Math.Ceiling(TextWidth(items[i][1], fs, FontWeights.Normal)) + strokeW;
-                AddGroup(items[i][0], items[i][1], fs, labelW, valueW,
+                double cellW = Math.Ceiling(TextWidth(items[i][2], fs, FontWeights.SemiBold)) + strokeW;
+                if (cellW < valueW * 0.8) cellW = valueW * 0.8;   // 太窄的格子读起来像漏字
+                AddGroup(items[i][0], items[i][1], fs, labelW, cellW,
                          labelGap, isLast ? 0 : groupGap, strokeW,
                          labelBrush, valueBrush, outlineBrush);
             }
@@ -289,6 +298,24 @@ namespace PerfOverlay.Views
                 else
                     Set("vram", null, "显存不可用");
             }
+
+            if (_settings.ShowClock)
+                Set("time", string.IsNullOrEmpty(s.ClockText) ? null : s.ClockText, null);
+
+            if (_settings.ShowGpu)
+                Set("gpu", s.GpuOk ? FormatPercent(s.GpuPercent) : null,
+                    s.GpuOk ? s.GpuDetail
+                            : (string.IsNullOrEmpty(s.GpuDetail) ? "GPU 利用率不可用" : s.GpuDetail));
+
+            if (_settings.ShowTemp)
+                Set("temp", s.TempOk ? FormatTemp(s.TempCelsius) : null,
+                    s.TempOk ? s.TempDetail
+                             : (string.IsNullOrEmpty(s.TempDetail) ? "温度不可用" : s.TempDetail));
+        }
+
+        private static string FormatTemp(double celsius)
+        {
+            return ((int)Math.Round(celsius)).ToString() + "°";
         }
 
         private static string FormatPercent(double v)

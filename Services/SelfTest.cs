@@ -117,6 +117,24 @@ namespace PerfOverlay.Services
             gpu.Dispose();
             w("");
 
+            w("--- GPU 利用率 / 温度 (NVML) ---");
+            var nv = new NvmlProbe();
+            bool nvOk = nv.EnsureInit();
+            w("初始化: " + nvOk);
+            w("状态: " + nv.Status);
+            w("设备: " + (nv.DeviceName.Length > 0 ? nv.DeviceName : "(未取到)"));
+            if (nvOk)
+            {
+                double nvT, nvU;
+                bool tOk, uOk;
+                bool any = nv.TryRead(out nvT, out nvU, out tOk, out uOk);
+                w("读取: " + any
+                    + "  温度 = " + (tOk ? string.Format("{0:0.0} °C", nvT) : "不可读")
+                    + "  利用率 = " + (uOk ? string.Format("{0:0.0}%", nvU) : "不可读"));
+            }
+            nv.Dispose();
+            w("");
+
             w("--- 帧统计算法自证（1% Low） ---");
             RunLowFpsChecks(w);
             w("");

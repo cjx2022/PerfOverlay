@@ -55,11 +55,12 @@ namespace PerfOverlay.Services
 
         // ------------------------------------------------------------------
 
-        /// <summary>浮窗：五项指标全开、中等字号、默认白字带描边，填一组示例数值。</summary>
+        /// <summary>浮窗：八项指标全开（配图要展示全部能力）、中等字号、默认白字带描边，填一组示例数值。</summary>
         private static Bitmap RenderOverlay()
         {
             var s = SettingsStore.Load();
             s.ShowCpu = s.ShowMemory = s.ShowFps = s.ShowLowFps = s.ShowVram = true;
+            s.ShowClock = s.ShowGpu = s.ShowTemp = true;
             s.SizeMode = "M";
             s.TextColor = "#FFFFFF";
             s.ShowOutline = true;
@@ -78,7 +79,10 @@ namespace PerfOverlay.Services
                 CpuOk = true, CpuPercent = 23,
                 MemoryPercent = 61, MemoryUsed = 10UL << 30, MemoryTotal = 16UL << 30,
                 FpsOk = true, Fps = 144, LowFps = 118, FrameCount = 1440, TargetProcess = "game",
-                VramOk = true, VramPercent = 42, VramUsed = 3UL << 30, VramBudget = 8UL << 30
+                VramOk = true, VramPercent = 42, VramUsed = 3UL << 30, VramBudget = 8UL << 30,
+                ClockText = "21:45",
+                GpuOk = true, GpuPercent = 87,
+                TempOk = true, TempCelsius = 64
             });
 
             w.UpdateLayout();           // 数值位数变了，宽度要重排
@@ -87,11 +91,15 @@ namespace PerfOverlay.Services
             return bmp;
         }
 
-        /// <summary>控制面板：与用户实际打开时完全一样的视觉树。</summary>
+        /// <summary>控制面板：与用户实际打开时完全一样的视觉树（显示项全开，配图才看得出两列布局）。</summary>
         private static Bitmap RenderPanel()
         {
+            var s = SettingsStore.Load();
+            s.ShowCpu = s.ShowMemory = s.ShowFps = s.ShowLowFps = s.ShowVram = true;
+            s.ShowClock = s.ShowGpu = s.ShowTemp = true;
+
             var w = new SettingsWindow();
-            w.Bind(SettingsStore.Load());
+            w.Bind(s);
             w.ShowActivated = false;
             w.Opacity = 0;
             w.MoveOffscreen();

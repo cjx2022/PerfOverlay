@@ -22,6 +22,9 @@ namespace PerfOverlay.Views
         public SettingsWindow()
         {
             InitializeComponent();
+
+            // 标题栏上的产品名后面挂版本号：出问题时一眼知道在跑哪一版
+            TxtProduct.Text = "PerfOverlay v" + UpdateChecker.CurrentVersion;
         }
 
         /// <summary>诊断用：三个位置按钮，供「等宽、不越界」的断言。</summary>
@@ -34,6 +37,16 @@ namespace PerfOverlay.Views
         public System.Windows.FrameworkElement[] Cards()
         {
             return new System.Windows.FrameworkElement[] { CardDisplay, CardAppearance, CardBehavior, CardFrame };
+        }
+
+        /// <summary>
+        /// 诊断用：显示项目卡里的八个开关，顺序是「左列 4 个 + 右列 4 个」。
+        /// 两列布局光看截图会漏掉文字被压窄、列间重叠这类问题，必须有 rect 可量。
+        /// </summary>
+        public System.Windows.FrameworkElement[] MetricSwitches()
+        {
+            return new System.Windows.FrameworkElement[]
+            { ChkCpu, ChkMem, ChkFps, ChkLow, ChkVram, ChkClock, ChkGpu, ChkTemp };
         }
 
         /// <summary>诊断用：内容区根（不含标题栏），按钮越界检查以它为右边界。</summary>
@@ -74,6 +87,9 @@ namespace PerfOverlay.Views
             ChkFps.IsChecked = _s.ShowFps;
             ChkLow.IsChecked = _s.ShowLowFps;
             ChkVram.IsChecked = _s.ShowVram;
+            ChkClock.IsChecked = _s.ShowClock;
+            ChkGpu.IsChecked = _s.ShowGpu;
+            ChkTemp.IsChecked = _s.ShowTemp;
 
             if (_s.SizeMode == "S") SegS.IsChecked = true;
             else if (_s.SizeMode == "L") SegL.IsChecked = true;
@@ -149,6 +165,9 @@ namespace PerfOverlay.Views
             _s.ShowFps = ChkFps.IsChecked == true;
             _s.ShowLowFps = ChkLow.IsChecked == true;
             _s.ShowVram = ChkVram.IsChecked == true;
+            _s.ShowClock = ChkClock.IsChecked == true;
+            _s.ShowGpu = ChkGpu.IsChecked == true;
+            _s.ShowTemp = ChkTemp.IsChecked == true;
 
             if (SegS.IsChecked == true) _s.SizeMode = "S";
             else if (SegL.IsChecked == true) _s.SizeMode = "L";

@@ -53,7 +53,8 @@
                 <StackPanel Orientation="Horizontal" Margin="18,0" VerticalAlignment="Center">
                     <TextBlock Text="性能浮窗" FontSize="13.5" FontWeight="SemiBold"
                                Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center" />
-                    <TextBlock Text="PerfOverlay" FontSize="11"
+                    <!-- 版本号由代码填（UpdateChecker.CurrentVersion），避免 XAML 里写死一份 -->
+                    <TextBlock x:Name="TxtProduct" Text="PerfOverlay" FontSize="11"
                                Foreground="{StaticResource TextSecondary}"
                                Margin="8,1,0,0" VerticalAlignment="Center" />
                 </StackPanel>
@@ -100,21 +101,61 @@
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
-                <!-- ===== 左上：显示项目 ===== -->
+                <!-- ===== 左上：显示项目（两列 × 四行） =====
+                     8 个开关如果排成一列，卡片会比右边「外观」还高，窗口被拉长；
+                     两列后行数从 5 降到 4，左右两张卡高度更接近，视线不用上下跳。
+                     列间隙 14、行间隙 12：与卡片内其它控件同一套节奏，不做例外。 -->
                 <Border x:Name="CardDisplay" Grid.Row="0" Grid.Column="0" Style="{StaticResource Card}" Padding="15,13">
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock Text="显示项目" Style="{StaticResource SectionTitle}" Margin="0,0,0,8" />
 
-                        <CheckBox x:Name="ChkCpu" Style="{StaticResource Switch}" Content="CPU 利用率"
-                                  Margin="0,0,0,12" Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
-                        <CheckBox x:Name="ChkMem" Style="{StaticResource Switch}" Content="内存利用率"
-                                  Margin="0,0,0,12" Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
-                        <CheckBox x:Name="ChkFps" Style="{StaticResource Switch}" Content="帧数（前台程序）"
-                                  Margin="0,0,0,12" Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
-                        <CheckBox x:Name="ChkLow" Style="{StaticResource Switch}" Content="1% Low 帧"
-                                  Margin="0,0,0,12" Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
-                        <CheckBox x:Name="ChkVram" Style="{StaticResource Switch}" Content="显存利用率"
-                                  Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="14" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <!-- 第一列：性能三项 + 帧率 -->
+                            <CheckBox x:Name="ChkCpu" Grid.Row="0" Grid.Column="0"
+                                      Style="{StaticResource Switch}" Content="CPU 使用率"
+                                      Margin="0,0,0,12" Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
+                            <CheckBox x:Name="ChkMem" Grid.Row="1" Grid.Column="0"
+                                      Style="{StaticResource Switch}" Content="内存使用率"
+                                      Margin="0,0,0,12" Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
+                            <CheckBox x:Name="ChkFps" Grid.Row="2" Grid.Column="0"
+                                      Style="{StaticResource Switch}" Content="帧数"
+                                      ToolTip="前台程序的帧数（游戏 / 播放器）"
+                                      Margin="0,0,0,12" Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
+                            <CheckBox x:Name="ChkLow" Grid.Row="3" Grid.Column="0"
+                                      Style="{StaticResource Switch}" Content="1% Low"
+                                      ToolTip="最近 10 秒最差 1% 帧的平均帧率"
+                                      Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
+
+                            <!-- 第二列：显存 + 0.9.4 新增的三项（默认关） -->
+                            <CheckBox x:Name="ChkVram" Grid.Row="0" Grid.Column="2"
+                                      Style="{StaticResource Switch}" Content="显存"
+                                      ToolTip="显存利用率"
+                                      Margin="0,0,0,12" Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
+                            <CheckBox x:Name="ChkClock" Grid.Row="1" Grid.Column="2"
+                                      Style="{StaticResource Switch}" Content="时间"
+                                      ToolTip="时:分"
+                                      Margin="0,0,0,12" Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
+                            <CheckBox x:Name="ChkGpu" Grid.Row="2" Grid.Column="2"
+                                      Style="{StaticResource Switch}" Content="GPU 使用率"
+                                      ToolTip="整卡利用率（NVIDIA 驱动 NVML）"
+                                      Margin="0,0,0,12" Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
+                            <CheckBox x:Name="ChkTemp" Grid.Row="3" Grid.Column="2"
+                                      Style="{StaticResource Switch}" Content="温度（GPU）"
+                                      ToolTip="显卡核心温度（NVIDIA 驱动 NVML）"
+                                      Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
+                        </Grid>
                     </StackPanel>
                 </Border>
 
