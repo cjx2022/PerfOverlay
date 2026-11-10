@@ -180,23 +180,9 @@ namespace PerfOverlay.Services
             }
             w("");
 
-            w("--- CPU 温度 · 第一级：ACPI 热区（零依赖） ---");
-            w("（纯用户态：免管理员、免驱动、免安装；固件不实现 _TZ 时会读不到）");
-            var at = new AcpiTempProbe();
-            w("探测: " + at.Probe() + "   热区数: " + at.ZoneCount);
-            w("状态: " + at.Status);
-            if (at.Available)
-            {
-                double tc;
-                string why;
-                w("读取: CT = " + (at.TryRead(out tc, out why)
-                    ? string.Format("{0:0.0} °C", tc) : "不可读 " + why));
-                w("热区: " + (at.SensorName.Length > 0 ? at.SensorName : "(未命名)"));
-            }
-            at.Dispose();
-            w("");
-
-            w("--- CPU 温度 · 第二级：PawnIO + 架构模块（需安装） ---");
+            // 顺序与 MonitorHost.FillCpuTemp 保持一致：0.9.6 起驱动优先、ACPI 兜底。
+            // 报告里写反了的话，下次看报告的人会被误导去查错的那条线。
+            w("--- CPU 温度 · 第一级：PawnIO + 架构模块（需安装，优先） ---");
             w("处理器: " + PawnIoCpuTemp.CpuSummary
               + "  厂商: " + (PawnIoCpuTemp.Vendor.Length > 0 ? PawnIoCpuTemp.Vendor : "未知")
               + "  路径: " + PawnIoCpuTemp.PathSummary);
@@ -212,8 +198,27 @@ namespace PerfOverlay.Services
                 string why;
                 w("读取: CT = " + (pt.TryRead(out tc, out why)
                     ? string.Format("{0:0.0} °C", tc) : "不可读 " + why));
+                w("原始值: " + pt.ReadOnceDetailed());
             }
             pt.Dispose();
+            w("");
+
+            w("--- CPU 温度 · 第二级：ACPI 热区（零依赖，兜底） ---");
+            w("（纯用户态：免管理员、免驱动、免安装；固件不实现 _TZ 时会读不到。"
+              + "注意固件可能给出恒定占位值，所以只作兜底）");
+            var at = new AcpiTempProbe();
+            w("探测: " + at.Probe() + "   热区数: " + at.ZoneCount);
+            w("状态: " + at.Status);
+            if (at.Available)
+            {
+                double tc;
+                string why;
+                w("读取: CT = " + (at.TryRead(out tc, out why)
+                    ? string.Format("{0:0.0} °C", tc) : "不可读 " + why));
+                w("热区: " + (at.SensorName.Length > 0 ? at.SensorName : "(未命名)"));
+                foreach (string z in at.ZoneReadings) w("  " + z);
+            }
+            at.Dispose();
             w("");
 
             w("--- 对照：NVML（仅 NVIDIA，已是兜底路径） ---");

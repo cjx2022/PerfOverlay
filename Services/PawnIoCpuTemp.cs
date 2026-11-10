@@ -274,6 +274,45 @@ namespace PerfOverlay.Services
         }
 
         /// <summary>
+        /// 排障用：把原始寄存器值和每一层换算都摊开成一行字。
+        /// 有了它，「温度恒定」这类问题不用再靠猜 —— raw 是死的还是活的、49℃ 偏移有没被误触发、
+        /// TjMax 读成多少，全在这一行里。
+        /// </summary>
+        public string ReadOnceDetailed()
+        {
+            string why;
+            if (IsIntel)
+            {
+                ulong target, status;
+                if (!_io.TryReadMsr(MsrTemperatureTarget, out target, out why)) return "MSR 0x1A2 读取失败：" + why;
+                if (!_io.TryReadMsr(MsrPackageThermStatus, out status, out why)) return "MSR 0x1B1 读取失败：" + why;
+
+                int tjMax = (int)((target >> 16) & 0xFF);
+                int off = (int)((status >> 16) & 0x7F);
+                bool valid = (status & 0x80000000UL) != 0;
+
+                return string.Format(
+                    "MSR 0x1A2=0x{0:X16} TjMax={1} ／ MSR 0x1B1=0x{2:X16} valid={3} offset={4} → {5:0.00} ℃",
+                    target, tjMax, status, valid ? 1 : 0, off, tjMax - off);
+            }
+
+            uint raw;
+            if (!_io.TryReadSmn(ThmTconCurTmp, out raw, out why)) return "SMN 0x00059800 读取失败：" + why;
+
+            bool rangeSel = (raw & RangeSelMask) != 0;
+            int tjSel = (int)((raw & TjSelMask) >> 16);
+            bool offset49 = rangeSel || tjSel == 3;
+            double t = (raw >> 21) * 0.125;
+            double final = offset49 ? t - 49.0 : t;
+
+            return string.Format(
+                "SMN 0x00059800=0x{0:X8}  bits[31:21]={1}  RANGE_SEL[19]={2}  TJ_SEL[17:16]={3}  "
+                + "偏移49={4}  → {5:0.00} ℃",
+                raw, raw >> 21, rangeSel ? 1 : 0, tjSel,
+                offset49 ? "是" : "否", final);
+        }
+
+        /// <summary>
         /// AMD：SMN 0x00059800 的 bits 21+ 是 0.125℃ 单位的温度，
         /// 部分型号带 49℃ 偏移（由 RangeSel / TjSel 两个位标记）。
         /// </summary>

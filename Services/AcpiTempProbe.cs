@@ -24,6 +24,15 @@ namespace PerfOverlay.Services
         /// <summary>热区数量（多个热区时我们取最高的那个，通常是 CPU）。</summary>
         public int ZoneCount { get; private set; }
 
+        /// <summary>
+        /// 上一次读到的每个热区的明细（"TZ00 = 28.0 ℃"）。排障用：
+        /// 有的 BIOS 会同时给出一个恒定的假热区和一个偶尔更新的真热区，
+        /// 只看最高值分不清，得把每个都摆出来。
+        /// </summary>
+        public IList<string> ZoneReadings { get { return _zones; } }
+
+        private readonly List<string> _zones = new List<string>();
+
         public string Status { get { return _why; } }
         public string SensorName { get { return _sensorName; } }
         public bool Available { get { return _ok; } }
@@ -72,6 +81,7 @@ namespace PerfOverlay.Services
                 using (ManagementObjectCollection col = searcher.Get())
                 {
                     var zones = new List<double>();
+                    var names = new List<string>();
                     string bestName = "";
 
                     foreach (ManagementObject mo in col)
@@ -86,6 +96,7 @@ namespace PerfOverlay.Services
                             if (c > -40 && c < 150)
                             {
                                 zones.Add(c);
+                                names.Add(Convert.ToString(mo["InstanceName"]));
                                 if (zones.Count == 1) bestName = Convert.ToString(mo["InstanceName"]);
                             }
                         }
@@ -94,6 +105,15 @@ namespace PerfOverlay.Services
                     }
 
                     ZoneCount = zones.Count;
+
+                    // 明细照抄原始值：WMI 里 28℃ 对应的其实是 3011~3012（0.1K），
+                    // 换算成摄氏度会四舍五入掉关键信息，所以两样都留。
+                    _zones.Clear();
+                    for (int i = 0; i < zones.Count; i++)
+                    {
+                        _zones.Add(string.Format("{0} = {1:0.0} ℃", names[i], zones[i]));
+                    }
+
                     if (zones.Count == 0)
                     {
                         why = "固件没有暴露 ACPI 温度热区";

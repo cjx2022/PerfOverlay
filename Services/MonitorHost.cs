@@ -73,6 +73,8 @@ namespace PerfOverlay.Services
         private bool _nvmlTried;
         // CPU 温度：第一级读 ACPI 热区（系统自带 WMI，零驱动零安装）。
         private AcpiTempProbe _temp;
+        /// <summary>ACPI 兜底路径的「读数是否长时间不动」监控（见 FreezeWatch）。</summary>
+        private readonly FreezeWatch _acpiFreeze = new FreezeWatch();
         // CPU 温度：第二级 PawnIO + AMDFamily17 读 SMN。只有第一级失败、且用户真的
         // 点过「安装温度组件」之后才会被创建 —— 没装的机器上这个对象连影子都没有。
         private PawnIoCpuTemp _pawnTemp;
@@ -118,16 +120,24 @@ namespace PerfOverlay.Services
         /// <summary>
         /// CT 当前的取数状态，给设置面板判断要不要显示感叹号。
         /// 只读，不会触发安装 —— 驱动不在就是 not_installed，仅此而已。
+        ///
+        /// 先看「上一帧到底有没有读到温度」：能读到就报 ready。感叹号的语义是
+        /// **「CT 读不出来」**，不是「你还没装我的驱动」—— 用户的 BIOS 已经有热区、
+        /// 温度一直在跳的机器上弹一个「去装组件」，纯属骚扰。
         /// </summary>
         public string CpuTempState
         {
             get
             {
+                if (_cpuTempLive) return "ready";
                 if (_pawnTemp != null) return _pawnTemp.DriverState;
                 if (_temp != null && _temp.Probe()) return "ready";
                 return PawnIoCpuTemp.IsSupportedCpu ? "not_installed" : "unsupported";
             }
         }
+
+        /// <summary>上一帧 CT 是否读到了有效值（任一来源）。CpuTempState 用它压掉误报的感叹号。</summary>
+        private volatile bool _cpuTempLive;
 
         /// <summary>装完驱动后调用：让温度探针重新走一遍（包括重新打开设备）。</summary>
         public void ResetCpuTempProbe()
@@ -288,18 +298,24 @@ namespace PerfOverlay.Services
             {
                 if (_temp == null) _temp = new AcpiTempProbe();
 
-                // 只有 ACPI 这条路确定走不通、且处理器本来就在支持范围内（AMD 17h~1Ah / Intel Core），
-                // 才去碰 PawnIO。注意这里 **不会** 触发安装：驱动不存在时
-                // PawnIoBridge 打开设备会立刻失败（ERROR_FILE_NOT_FOUND），
-                // 我们只是把结论记下来给 UI 显示感叹号，绝不在后台偷偷装东西。
-                if (!_temp.Probe() && PawnIoCpuTemp.IsSupportedCpu)
+                // 驱动这条线只要架构在支持范围内就建起来试一次 —— **不能等 ACPI 失败才建**。
+                // 0.9.6 之前正是那样写的，后果很隐蔽：BIOS 一旦提供了热区（哪怕是恒定 28℃
+                // 的占位值），_pawnTemp 就永远为 null，用户装了驱动也一次都不会被调用。
+                //
+                // 注意这里 **不会** 触发安装：驱动不存在时 PawnIoBridge 打开设备会立刻失败
+                // （ERROR_FILE_NOT_FOUND），结论由 Probe() 缓存，之后每帧只是一次 bool 返回。
+                bool pawnReady = false;
+                if (PawnIoCpuTemp.IsSupportedCpu)
                 {
                     lock (_tempGate)
                     {
                         if (_pawnTemp == null) _pawnTemp = new PawnIoCpuTemp();
-                        _pawnTemp.Probe();
+                        pawnReady = _pawnTemp.Probe();
                     }
                 }
+
+                // ACPI 只在驱动不可用时兜底。这里仍先探一次：没装驱动的机器靠它才出得了温度。
+                if (!pawnReady) _temp.Probe();
             }
             else
             {
@@ -439,33 +455,26 @@ namespace PerfOverlay.Services
         }
 
         /// <summary>
-        /// CPU 温度：两级。第一级 ACPI 热区（root\WMI），零依赖零权限；
-        /// 第二级 PawnIO + AMDFamily17 读 SMN 寄存器（AMD 17h~1Ah 通用，要装一次驱动）。
+        /// CPU 温度：两级，**驱动优先、ACPI 兜底**。
         ///
-        /// 「两级都失败」时把结论分成四类写进快照，UI 据此决定要不要给感叹号：
-        ///   not_installed —— 该装驱动（AMD / Intel 且 ACPI 不支持）
-        ///   no_access     —— 驱动装好了，但当前不是管理员
-        ///   unsupported   —— 架构不在支持范围，或者 ACPI 已经可用（不需要驱动）
-        ///   read_failed   —— 装了也读不到，属于真异常
+        /// 顺序在 0.9.6 之前是反的（先 ACPI），代价很实在：ACPI 热区是固件转述的数，
+        /// 大量台式板/笔记本 BIOS 直接回一个恒定占位值（用户实测恒为 28℃，装完驱动也不变）。
+        /// 那种值能通过合理性闸门，于是链路在第一级就 return，**用户装的驱动一次都没被调用**，
+        /// 表现出来就是「装了组件，温度还是一动不动」。既然用户装驱动的目的就是要真 die 读数，
+        /// 那就该让 SMN 先答；ACPI 只在 SMN 不可用时兜底。
+        ///
+        /// 两条都失败时把结论写进快照，UI 据此决定要不要给感叹号：
+        ///   not_installed / no_access / module_failed / read_failed —— 见 PawnIoCpuTemp.DriverState
+        ///   unsupported —— 架构不在支持范围，且 ACPI 也没有
         /// </summary>
         private void FillCpuTemp(MetricsSnapshot snap)
         {
             double t;
             string why = "";
+            string pawnWhy = "";
+            string pawnState = "";
 
-            // ---- 第一级：ACPI 热区 ----
-            if (_temp != null && _temp.TryRead(out t, out why))
-            {
-                snap.TempCpuOk = true;
-                snap.TempCpuC = t;
-                snap.TempCpuDetail = "CPU 温度（ACPI 热区"
-                    + (_temp.SensorName.Length > 0 ? "：" + _temp.SensorName : "") + "）";
-                return;
-            }
-
-            string acpiWhy = why;
-
-            // ---- 第二级：PawnIO ----
+            // ---- 第一级：PawnIO（读 die 内温度传感器）----
             lock (_tempGate)
             {
                 if (_pawnTemp != null)
@@ -476,18 +485,75 @@ namespace PerfOverlay.Services
                         snap.TempCpuOk = true;
                         snap.TempCpuC = t;
                         snap.TempCpuDetail = "CPU 温度（SMN 寄存器，PawnIO）";
+                        snap.CpuTempState = "ready";
+                        _cpuTempLive = true;
+                        _acpiFreeze.Reset();   // 有真读数了，ACPI 那条线不再关注
                         return;
                     }
 
-                    snap.CpuTempState = _pawnTemp.DriverState;
-                    snap.TempCpuDetail = _pawnTemp.Status;
-                    return;
+                    pawnWhy = _pawnTemp.Status;
+                    pawnState = _pawnTemp.DriverState;
                 }
             }
 
+            // ---- 第二级：ACPI 热区（零依赖，但可能是固件固定值）----
+            if (_temp != null && _temp.TryRead(out t, out why))
+            {
+                bool frozen = _acpiFreeze.Add(t);
+                snap.TempCpuOk = true;
+                snap.TempCpuC = t;
+                snap.TempCpuDetail = "CPU 温度（ACPI 热区"
+                    + (_temp.SensorName.Length > 0 ? "：" + _temp.SensorName : "")
+                    + (frozen ? "；读数已 3 分钟未变化，多为固件固定值" : "")
+                    + "）";
+                snap.CpuTempState = "ready";
+                _cpuTempLive = true;
+                return;
+            }
+
+            string acpiWhy = why;
+
             // ---- 两级都没走通 ----
-            snap.CpuTempState = PawnIoCpuTemp.IsSupportedCpu ? "not_installed" : "unsupported";
-            if (snap.TempCpuDetail.Length == 0) snap.TempCpuDetail = acpiWhy;
+            _cpuTempLive = false;
+            snap.CpuTempState = pawnState.Length > 0
+                ? pawnState
+                : (PawnIoCpuTemp.IsSupportedCpu ? "not_installed" : "unsupported");
+
+            if (pawnWhy.Length > 0) snap.TempCpuDetail = pawnWhy;
+            else if (acpiWhy.Length > 0) snap.TempCpuDetail = acpiWhy;
+        }
+
+        /// <summary>
+        /// ACPI 读数冻结监控。ACPI 热区是固件给的数，恒定的占位值能骗过合理性闸门
+        /// （只拦 &lt;20℃），于是「一直 28℃」这种假值会长期冒充 CPU 温度。
+        /// 这里只做标注、不改数值：连续 3 分钟一字不差就在 tooltip 里点明，
+        /// 让用户知道该怀疑固件而不是怀疑程序。
+        /// </summary>
+        private sealed class FreezeWatch
+        {
+            private const int WindowMs = 180000;
+            private double _last = double.NaN;
+            private int _since;
+
+            /// <summary>记一次读数。返回 true 表示该值已经连续 WindowMs 没有变化。</summary>
+            public bool Add(double v)
+            {
+                int now = Environment.TickCount;
+                if (double.IsNaN(_last) || Math.Abs(v - _last) > 0.0001)
+                {
+                    _last = v;
+                    _since = now;
+                    return false;
+                }
+                // TickCount 约 49 天回绕一次，unchecked 让差值自然处理符号
+                return unchecked(now - _since) > WindowMs;
+            }
+
+            public void Reset()
+            {
+                _last = double.NaN;
+                _since = 0;
+            }
         }
 
         /// <summary>
@@ -530,10 +596,11 @@ namespace PerfOverlay.Services
             {
                 string line = string.Format(
                     "{0:HH:mm:ss} tgt={1}({2}) pmRun={3} avail={4} fps={5:0.0} low={6:0.0} " +
-                    "n={7} msg=[{8}] err=[{9}] q={10}",
+                    "n={7} lines={8} sess={9} msg=[{10}] err=[{11}] se=[{12}] q={13}",
                     DateTime.Now, Frames.TargetPid, snap.TargetProcess, Frames.IsRunning,
                     snap.FpsOk, snap.Fps, snap.LowFps, snap.FrameCount,
-                    snap.FpsMessage, Frames.LastError, Frames.QueueStat);
+                    Frames.LinesSeen, Frames.SessionName,
+                    snap.FpsMessage, Frames.LastError, Frames.StderrText, Frames.QueueStat);
 
                 File.AppendAllText(_frameDiagPath, line + Environment.NewLine);
             }

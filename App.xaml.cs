@@ -100,8 +100,8 @@ namespace PerfOverlay
         }
 
         /// <summary>
-        /// 常规运行记录。默认**不落盘**，只有带 --diag 启动时才写，
-        /// 避免把「谁在什么时候用过什么程序」这类痕迹无谓地留在 %TEMP% 里。
+        /// 常规运行记录。默认**写盘**（%TEMP%\perfoverlay-error.log，256 KB 封顶轮转）：
+        /// 帧数 N/A、接管失败这类问题事后只能靠它定案。--no-diag 可关。
         /// </summary>
         private static void LogInfo(string stage, string message)
         {
@@ -133,8 +133,12 @@ namespace PerfOverlay
 
         private void StartupCore(StartupEventArgs e)
         {
-            // --diag：打开常规运行日志（默认关闭，见 LogInfo）
-            _diagnostic = HasArg(e.Args, "--diag");
+            // 帧采集现场默认留痕：帧数 N/A 这类问题，事后只能靠
+            // %TEMP%\perfoverlay-frames.log 这一行行「目标 PID / PresentMon 存活 /
+            // 各队列帧数 / 失败原因」定案。以前只在 --diag 下写，结果真出问题时
+            // 一份现场都没有，只能猜。每 5 秒一行、512 KB 自动轮转，代价可忽略。
+            // --no-diag 可关。
+            _diagnostic = !HasArg(e.Args, "--no-diag");
 
             // --sw：强制软件渲染（必须在建任何 UI 之前设）。用来对比「WPF 走 D3D 时
             // 会把显卡驱动整包映射进来」到底吃掉多少工作集。
@@ -258,8 +262,11 @@ namespace PerfOverlay
                 && !HasArg(e.Args, "--elevated-attempt"))
             {
                 // 重复双击时不要去做「提权 + 等 12 秒接管」那套：已经有实例在跑就静默退出。
-                // --takeover 是显式接管请求（来自「以管理员身份重启」），必须放行。
-                if (!HasArg(e.Args, "--takeover") && InstanceAlreadyRunning())
+                // --takeover 是显式接管请求（来自「以管理员身份重启」），必须放行；
+                // --force-takeover 是「旧实例卡死了，直接顶掉它」，同样要放行。
+                if (!HasArg(e.Args, "--takeover")
+                    && !HasArg(e.Args, "--force-takeover")
+                    && InstanceAlreadyRunning())
                 {
                     LogInfo("AlreadyRunning", "已有实例在运行，本次启动直接退出");
                     Shutdown(0);
@@ -267,7 +274,8 @@ namespace PerfOverlay
                 }
 
                 string elevArgs = "--startup --takeover --elevated-attempt"
-                                  + (_diagnostic ? " --diag" : "")
+                                  + (HasArg(e.Args, "--force-takeover") ? " --force-takeover" : "")
+                                  + (_diagnostic ? "" : " --no-diag")
                                   + (HasArg(e.Args, "--mem") ? " --mem" : "")
                                   + (HasArg(e.Args, "--mem-hide") ? " --mem-hide" : "")
                                   + ((HasArg(e.Args, "--temp-probe") || HasArg(e.Args, "--lhm-probe")) ? " --temp-probe" : "")
@@ -282,11 +290,21 @@ namespace PerfOverlay
                 LogInfo("Elevate", "提权未成功（" + elevErr + "），继续以普通权限运行（FPS 将显示 N/A）");
             }
 
+            // --force-takeover：旧实例卡死（Application Hang、停在模态等待里、或
+            // PresentMon 卡在写管道上）时，--takeover 只会干等 12 秒然后放弃，
+            // 用户除了去任务管理器没有别的路。这个开关先把同类进程收掉再抢互斥体。
+            // 只按进程名前缀匹配，绝不碰别的程序。
+            if (HasArg(e.Args, "--force-takeover"))
+            {
+                int killed = KillOtherInstances();
+                LogInfo("Takeover", "强制接管：结束旧实例 " + killed + " 个");
+            }
+
             // 单实例互斥。--takeover 是「以管理员身份重启」专用：旧实例此刻可能还没退干净
             // （UAC 是同进程内启动的新进程先跑起来，旧进程随后才 Shutdown），
             // 这里必须等它释放互斥体，否则新进程会误判「已有实例」把自己杀掉，
             // 表现就是点了 UAC 的「是」然后什么都没发生。
-            bool takeover = HasArg(e.Args, "--takeover");
+            bool takeover = HasArg(e.Args, "--takeover") || HasArg(e.Args, "--force-takeover");
             bool created;
             _single = new Mutex(true, "Local\\PerfOverlay.Instance", out created);
 
@@ -1048,11 +1066,13 @@ namespace PerfOverlay
                           + (PerfOverlay.Services.PawnIoCpuTemp.IsSupportedCpu ? "命中" : "不命中"));
             sb.AppendLine();
 
-            sb.AppendLine("-- 第一级：ACPI 热区（零依赖）--");
+            sb.AppendLine("-- ACPI 热区（零依赖，仅作兜底）--");
+            bool acpiOk = false;
             var acpi = new PerfOverlay.Services.AcpiTempProbe();
             try
             {
                 bool ok = acpi.Probe();
+                acpiOk = ok;
                 sb.AppendLine("  可用: " + (ok ? "是" : "否"));
                 sb.AppendLine("  状态: " + acpi.Status);
                 if (ok)
@@ -1061,7 +1081,21 @@ namespace PerfOverlay
                     string why;
                     sb.AppendLine("  热区数: " + acpi.ZoneCount + "  传感器: " + acpi.SensorName);
                     if (acpi.TryRead(out t, out why))
+                    {
                         sb.AppendLine(string.Format("  读数: {0:0.0} ℃", t));
+                        // 每个热区都列出来：固件固定值往往就是一个热区恒不动，
+                        // 只看最高值看不出来。
+                        foreach (string z in acpi.ZoneReadings) sb.AppendLine("    热区 " + z);
+                        sb.AppendLine("  冻结判定: 连采 3 次");
+                        for (int i = 0; i < 2; i++)
+                        {
+                            System.Threading.Thread.Sleep(600);
+                            double t2;
+                            string w2;
+                            if (acpi.TryRead(out t2, out w2))
+                                sb.AppendLine(string.Format("    采样{0}: {1:0.0} ℃", i + 2, t2));
+                        }
+                    }
                     else
                         sb.AppendLine("  读取失败: " + why);
                 }
@@ -1070,7 +1104,7 @@ namespace PerfOverlay
             finally { acpi.Dispose(); }
             sb.AppendLine();
 
-            sb.AppendLine("-- 第二级：PawnIO + AMDFamily17（需安装）--");
+            sb.AppendLine("-- PawnIO + 架构模块（需安装，实际优先）--");
             sb.AppendLine("  服务已注册: " + (PerfOverlay.Services.PawnIoInstaller.IsServiceRegistered() ? "是" : "否"));
             // 只查有没有，不触发下载：探针必须保持「只读、不联网」的承诺
             string cache = PerfOverlay.Services.PawnIoInstaller.CachePath;
@@ -1080,10 +1114,12 @@ namespace PerfOverlay
             sb.AppendLine("  程序旁安装包: " + sidecar + (File.Exists(sidecar) ? "（已有）" : "（无）"));
             sb.AppendLine();
 
+            bool pawnOk = false;
             var pawn = new PerfOverlay.Services.PawnIoCpuTemp();
             try
             {
                 bool ok = pawn.Probe();
+                pawnOk = ok;
                 sb.AppendLine("  可用: " + (ok ? "是" : "否"));
                 sb.AppendLine("  驱动状态: " + pawn.DriverState);
                 sb.AppendLine("  说明: " + pawn.Status);
@@ -1100,6 +1136,12 @@ namespace PerfOverlay
                             sb.AppendLine(string.Format("  采样{0}: 失败 —— {1}", i + 1, why));
                         System.Threading.Thread.Sleep(500);
                     }
+
+                    // 原始寄存器值连打两次：raw 一动不动就说明问题在驱动/固件这一侧，
+                    // 而不是换算公式。有了这两行，用户报「温度恒定」时不用再猜。
+                    sb.AppendLine("  原始值 #1: " + pawn.ReadOnceDetailed());
+                    System.Threading.Thread.Sleep(1200);
+                    sb.AppendLine("  原始值 #2: " + pawn.ReadOnceDetailed());
                 }
             }
             catch (Exception ex)
@@ -1110,6 +1152,14 @@ namespace PerfOverlay
 
             sb.AppendLine();
             sb.AppendLine("-- 结论 --");
+            // 这一行和 MonitorHost.FillCpuTemp 是同一条规则（驱动优先、ACPI 兜底）。
+            // 用户报「温度一动不动」时，先看它就知道该查哪条线，不用再猜。
+            sb.AppendLine("  实际取数来源: "
+                + (pawnOk
+                    ? "SMN/MSR 寄存器（驱动优先）"
+                    : (acpiOk
+                        ? "ACPI 热区（兜底；读数恒定则多为固件固定值）"
+                        : "无，CT 会显示 --")));
             string state = PerfOverlay.Services.PawnIoInstaller.DescribeState();
             sb.AppendLine("  UI 状态: " + state);
             switch (state)
@@ -1427,6 +1477,35 @@ namespace PerfOverlay
                 if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase)) return true;
             }
             return false;
+        }
+
+        /// <summary>
+        /// 结束其它 PerfOverlay 实例，以及它们留下的 PresentMon 子进程（父进程被强杀后
+        /// 子进程会变孤儿，继续占着 ETW 实时会话）。返回结束的进程数。
+        /// 只按进程名前缀匹配，绝不碰无关程序；自己永远跳过。
+        /// </summary>
+        private static int KillOtherInstances()
+        {
+            int self = System.Diagnostics.Process.GetCurrentProcess().Id;
+            int n = 0;
+            foreach (var p in System.Diagnostics.Process.GetProcesses())
+            {
+                try
+                {
+                    if (p.Id == self) continue;
+                    string name = p.ProcessName;
+                    bool hit = name.StartsWith("PerfOverlay", StringComparison.OrdinalIgnoreCase)
+                               || name.StartsWith("PresentMon", StringComparison.OrdinalIgnoreCase);
+                    if (!hit) continue;
+
+                    p.Kill();
+                    p.WaitForExit(2000);
+                    n++;
+                }
+                catch (Exception) { }
+                finally { try { p.Dispose(); } catch (Exception) { } }
+            }
+            return n;
         }
 
         /// <summary>取 `--name value` 后面那个值；没给值返回 null。</summary>

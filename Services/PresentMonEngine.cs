@@ -59,6 +59,31 @@ namespace PerfOverlay.Services
 
         private Process _proc;
 
+        // stdout / stderr 各一条专用读线程。早先用的是 Process.OutputDataReceived
+        // 事件回调，那个回调跑在 .NET 线程池上、**每一行都要排一次队**：游戏 300fps
+        // 时每秒几百次调度，一旦线程池被 UI 渲染或采样线程占住，回调就积压 → 管道
+        // 64KB 写满 → PresentMon 阻塞在 write(stdout)，不再读 ETW → 内核判定
+        // 「实时会话没有实时使用者」→ 缓冲区写满、帧事件全被丢弃 → 队列空、帧数 N/A。
+        // 这条链在 Kernel-EventTracing 日志里留下了原话（事件 1，见 README 排障）。
+        // 改成专用线程同步 ReadLine 之后，消费速度只取决于这一条线程，与线程池无关。
+        private Thread _outThread;
+        private Thread _errThread;
+
+        // stderr 与 stdout 用两把锁：stderr 极少，不该跟每帧都要拿的 _gate 抢。
+        private readonly object _errGate = new object();
+
+        // stderr 现场。必须能**随时**取到当前内容，不能只在进程退出后读：
+        // PresentMon 会话建不起来时进程并不退出，只往 stderr 抱怨一句，然后安安静静
+        // 挂着 —— 旧实现只在 HasExited 时才赋值，于是诊断日志里 err=[] 一片干净，
+        // 让人以为「什么都没错」。排障最怕这种假绿。
+        private readonly StringBuilder _errBuf = new StringBuilder();
+
+        // 自己的进程文件名（带 .exe）。--exclude 按 CSV 的 Application 列精确匹配，
+        // 而那一列是带扩展名的。发布物叫 PerfOverlay-0.9.5.exe，写死 "PerfOverlay.exe"
+        // 匹配不上，PresentMon 会把浮窗自己的 present 也记进来，白白多一份负载。
+        private static readonly string SelfExeName =
+            SafeSelfExeName() ?? "PerfOverlay.exe";
+
         // 本次 PresentMon 子进程使用的 ETW 会话名。必须每次启动都不同：
         // 进程被强杀（RecycleIfStarved / 应用退出）时内核会话不会被回收，
         // 固定名字下一次启动会撞 0xC0000035（对象名冲突），会话起不来、一帧都收不到，
@@ -99,12 +124,41 @@ namespace PerfOverlay.Services
 
         private string _lastError = "";
 
+        // 从 PresentMon stdout 收到的 CSV 行总数（含表头）。这一个数字就能把
+        // 「帧数 N/A」拆成三种完全不同的情况：
+        //   lines=0            → PresentMon 一句都没吐：会话没建起来 / 被拦 / 被 exclude 光
+        //   lines>0 且队列空    → 有输出但解析没命中（列序或编码变了）
+        //   lines>0 且队列有帧  → 解析没问题，是目标进程判定错了（选中了不 present 的进程）
+        // 以前只有 QueueStat，队列空的时候根本分不清是哪一种。
+        private long _linesSeen;
+
         public bool IsRunning
         {
             get { var p = _proc; return p != null && !p.HasExited; }
         }
 
         public string LastError { get { return _lastError; } }
+
+        /// <summary>PresentMon 的 stderr 现场（进程还活着时也能取到）。诊断用。</summary>
+        public string StderrText
+        {
+            get
+            {
+                lock (_errGate)
+                {
+                    return _errBuf.ToString()
+                        .Replace("\r", "")
+                        .Replace("\n", " | ")
+                        .Trim();
+                }
+            }
+        }
+        /// <summary>stdout 收到的 CSV 行总数（诊断用，见 _linesSeen 注释）。</summary>
+        public long LinesSeen { get { return Interlocked.Read(ref _linesSeen); } }
+
+        /// <summary>本次子进程使用的 ETW 会话名（诊断用，方便和内核日志对照）。</summary>
+        public string SessionName { get { return _sessionName; } }
+
         public string ExePath { get { return _exePath; } }
         public bool PresentMonFound { get { return File.Exists(_exePath); } }
 
@@ -187,8 +241,15 @@ namespace PerfOverlay.Services
                     // 会话名每次唯一：靠 --stop_existing_session 清残留并不可靠（实测清不掉的
                     // 僵死会话会让之后每次启动都报 0xC0000035，帧数永久 N/A）。
                     // 残留由 Stop() 里 PresentMon 自带的 --terminate_existing_session 收尾。
+                    //
+                    // --set_circular_buffer_size：PresentMon 自己的 present 事件环形缓冲
+                    // 默认只有 2048 条（-h 里写明），300fps 下不到 7 秒就绕一圈。超过就丢，
+                    // 丢掉的帧连 ETW 层都到不了。调到 32768（必须是 2 的幂），给消费端留余量。
+                    // 2.6 以下没有这个开关，加了会直接启动失败，所以按版本探测后再加。
                     Arguments = "--output_stdout --no_console_stats --v1_metrics "
-                              + "--session_name " + _sessionName + " --exclude PerfOverlay.exe",
+                              + "--session_name " + _sessionName
+                              + " --exclude " + SelfExeName
+                              + CircularBufferArg(),
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
@@ -198,24 +259,52 @@ namespace PerfOverlay.Services
                 };
 
                 var p = new Process { StartInfo = psi };
-                var sbErr = new StringBuilder();
-
-                p.ErrorDataReceived += (s, e) =>
-                {
-                    if (e.Data == null) return;
-                    lock (_gate) { if (sbErr.Length < 800) sbErr.AppendLine(e.Data); }
-                };
-                p.OutputDataReceived += (s, e) =>
-                {
-                    if (e.Data == null) return;
-                    HandleLine(e.Data);
-                };
+                lock (_errGate) { _errBuf.Length = 0; }
+                Interlocked.Exchange(ref _linesSeen, 0);
 
                 p.Start();
-                p.BeginOutputReadLine();
-                p.BeginErrorReadLine();
-
                 _proc = p;
+
+                // ── stdout：专用线程同步读 ────────────────────────────────
+                // 不用 BeginOutputReadLine + OutputDataReceived。那条路每来一行就要
+                // 往线程池排一次工作项，帧率高时会积压；积压 → 管道写满 → PresentMon
+                // 阻塞 → ETW 实时会话没有消费者 → 内核丢事件（帧数 N/A 的真正来源）。
+                // 一个阻塞在 ReadLine 上的专用线程没有调度延迟，来一行吃一行。
+                var outThread = new Thread(() =>
+                {
+                    try
+                    {
+                        string line;
+                        while ((line = p.StandardOutput.ReadLine()) != null)
+                        {
+                            HandleLine(line);
+                        }
+                    }
+                    catch (Exception) { }
+                });
+                outThread.IsBackground = true;
+                outThread.Name = "PresentMon-stdout";
+                outThread.Start();
+
+                // stderr 同样走专用线程：量很小，但用 BeginErrorReadLine 一样吃线程池。
+                var errThread = new Thread(() =>
+                {
+                    try
+                    {
+                        string line;
+                        while ((line = p.StandardError.ReadLine()) != null)
+                        {
+                            lock (_errGate) { if (_errBuf.Length < 800) _errBuf.AppendLine(line); }
+                        }
+                    }
+                    catch (Exception) { }
+                });
+                errThread.IsBackground = true;
+                errThread.Name = "PresentMon-stderr";
+                errThread.Start();
+
+                _outThread = outThread;
+                _errThread = errThread;
 
                 // 1.6 秒后仍未存活，把 stderr 当失败原因记下来（access denied 就在这里）
                 ThreadPool.QueueUserWorkItem(_ =>
@@ -225,10 +314,15 @@ namespace PerfOverlay.Services
                         Thread.Sleep(1600);
                         if (p.HasExited)
                         {
+                            string detail;
+                            lock (_errGate)
+                            {
+                                detail = _errBuf.Length > 0 ? _errBuf.ToString().Trim() : "";
+                            }
                             lock (_gate)
                             {
-                                _lastError = sbErr.Length > 0
-                                    ? sbErr.ToString().Trim()
+                                _lastError = detail.Length > 0
+                                    ? detail
                                     : ("PresentMon 退出码 " + p.ExitCode);
                             }
                         }
@@ -250,6 +344,60 @@ namespace PerfOverlay.Services
         // ------------------------------------------------------------------
 
         /// <summary>
+        /// 自己的进程文件名（带 .exe，与 CSV 的 Application 列同一口径）。
+        /// 取不到时返回 null，由调用方兜底。
+        /// </summary>
+        private static string SafeSelfExeName()
+        {
+            try
+            {
+                string path = null;
+                var asm = System.Reflection.Assembly.GetEntryAssembly();
+                if (asm != null)
+                {
+                    try { path = asm.Location; } catch (Exception) { }
+                }
+                if (string.IsNullOrEmpty(path))
+                {
+                    var mm = Process.GetCurrentProcess().MainModule;
+                    if (mm != null) path = mm.FileName;
+                }
+                string name = Path.GetFileName(path);
+                return string.IsNullOrEmpty(name) ? null : name;
+            }
+            catch (Exception) { return null; }
+        }
+
+        /// <summary>
+        /// --set_circular_buffer_size 只在 PresentMon 2.6 及以上存在（2.6.0 的 -h 里列在
+        /// Beta Options）。低版本传了会直接启动失败，表现为帧数永久 N/A，所以按文件版本
+        /// 探测后再决定加不加。
+        /// </summary>
+        private string CircularBufferArg()
+        {
+            // ── 暂时关闭（2026-11-10 实测）──
+            // PresentMon 2.6.0 的 --set_circular_buffer_size 列在 Beta Options。
+            // 加上之后实测：进程活着、stderr 一句不说、stdout 连 CSV 表头都不吐
+            // （诊断日志 lines=0），内核日志里也没有「会话未能启动」的记录 ——
+            // 就是卡在建立会话那一步不返回。帧数因此永久 N/A。
+            // 参数本身被解析器接受（传错参数会明确报 unrecognized option），
+            // 所以问题在运行时而不是命令行。等能确认它的行为再打开。
+            return "";
+
+            /*
+            try
+            {
+                var vi = FileVersionInfo.GetVersionInfo(_exePath);
+                int major = vi.FileMajorPart;
+                int minor = vi.FileMinorPart;
+                bool ok = major > 2 || (major == 2 && minor >= 6);
+                return ok ? " --set_circular_buffer_size 32768" : "";
+            }
+            catch (Exception) { return ""; }
+            */
+        }
+
+        /// <summary>
         /// 把一行 CSV 喂进解析管线。生产路径是 PresentMon 的 stdout，
         /// 诊断路径是回放录好的 CSV —— 两条路走同一份代码，回放才能证明解析没问题。
         /// </summary>
@@ -261,6 +409,7 @@ namespace PerfOverlay.Services
         private void HandleLine(string line)
         {
             if (string.IsNullOrEmpty(line)) return;
+            Interlocked.Increment(ref _linesSeen);
 
             if (line.StartsWith("Application,", StringComparison.OrdinalIgnoreCase) ||
                 line.StartsWith("ProcessID,", StringComparison.OrdinalIgnoreCase))
@@ -642,6 +791,10 @@ namespace PerfOverlay.Services
         {
             var p = _proc;
             _proc = null;
+            var ot = _outThread;
+            var et = _errThread;
+            _outThread = null;
+            _errThread = null;
             string session = _sessionName;
             _sessionName = "";
 
@@ -656,6 +809,13 @@ namespace PerfOverlay.Services
                     }
                 }
                 catch (Exception) { }
+
+                // 读线程必须死在 Dispose 之前：Dispose 关流后，还在 ReadLine 里的线程
+                // 会抛 ObjectDisposedException（外面有 catch，但那一瞬可能在处理半行）。
+                // Kill 之后管道就关了，ReadLine 立刻返回 null，实际几乎不用等。
+                try { if (ot != null) ot.Join(600); } catch (Exception) { }
+                try { if (et != null) et.Join(300); } catch (Exception) { }
+
                 try { p.Dispose(); } catch (Exception) { }
             }
 
