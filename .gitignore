@@ -12,6 +12,9 @@ _test/*.bat
 _test/*.txt
 dist/
 
+# 发布过程的临时物（release notes 本身留档，URL 不存）
+_release/*.txt
+
 # 打包与临时文件
 *.zip
 *.7z
