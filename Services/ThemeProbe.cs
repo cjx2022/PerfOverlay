@@ -65,28 +65,11 @@ namespace PerfOverlay.Services
                 w.Show();
                 w.UpdateLayout();
 
-                int nodes = 0, hard = 0, warn = 0;
-                double worst = 99;
-                string worstDesc = "";
-
-                foreach (var t in CollectText(w))
-                {
-                    Color fg = t.Item1, bg = t.Item2;
-                    double ratio = Contrast(fg, bg);
-                    nodes++;
-                    if (ratio < worst) { worst = ratio; worstDesc = t.Item3; }
-                    if (ratio < HardMin)
-                    {
-                        hard++;
-                        if (hard <= 8)
-                            sb.AppendLine(string.Format("   ✗ 对比度 {0:0.00}：{1}  字#{2:X2}{3:X2}{4:X2} 底#{5:X2}{6:X2}{7:X2}",
-                                ratio, t.Item3, fg.R, fg.G, fg.B, bg.R, bg.G, bg.B));
-                    }
-                    else if (ratio < AaMin) warn++;
-                }
-
-                sb.AppendLine(string.Format("   面板文字节点 {0} 个：硬性不足 {1}，AA 未达 {2}，最低 {3:0.00}（{4}）",
-                    nodes, hard, warn, worst, worstDesc));
+                int nodes, hard, warn;
+                double worst;
+                hard = MeasureWindow(w, dark ? "深色" : "浅色", sb, out nodes, out warn, out worst);
+                sb.AppendLine(string.Format("   面板文字节点 {0} 个：硬性不足 {1}，AA 未达 {2}，最低 {3:0.00}",
+                    nodes, hard, warn, worst));
                 if (nodes < MinTextNodes) { fails++; sb.AppendLine("   ✗ 文字节点过少，遍历可能没跑起来（假绿）"); }
                 if (hard > 0) fails++;
 
@@ -125,11 +108,15 @@ namespace PerfOverlay.Services
                 w.CloseForShutdown();
             }
 
-            // ---- 在线切换：同一个窗口不重建，直接把字典换掉，看颜色有没有跟着变 ----
-            // 这一项才是这个功能的真身。前面两段都是「按主题建窗口」，窗口重建的话
-            // 哪怕资源没换对也可能碰巧正确；只有就地切换能证明 DynamicResource 链路是通的。
+            // ---- 在线切换：同一个窗口不重建，直接把字典换掉，然后**全量重测** ----
+            // 这一段才是这个功能的真身，也是唯一能抓住「颜色在窗口创建那一刻被定死」的断言。
+            // 踩过的坑：视图里用 StaticResource 引用颜色 token，窗口建好时就把当时那套颜色
+            // 冻在元素上，之后再换字典也不跟着变 —— 表现是「浅色下几个标签发白、深色下同样
+            // 几个标签发黑」，而且**看起来是随机的**（取决于窗口是在哪套主题下建出来的）。
+            // 按主题各建一个窗口的测法永远测不出来：重建就重新解析资源，怎么测都是对的。
+            // 只有在活窗口上切换再全区重测，才会当场全军覆没。
             sb.AppendLine();
-            sb.AppendLine("-- 在线切换（同一窗口，不重建）--");
+            sb.AppendLine("-- 在线切换（同一窗口，不重建，切换后全量重测）--");
             ThemeManager.Apply(ThemeManager.Light);
             var live = new SettingsWindow();
             live.Bind(new AppSettings());
@@ -138,13 +125,20 @@ namespace PerfOverlay.Services
             live.Show();
             live.UpdateLayout();
 
+            int n, wa;
+            double worstLive;
+            int hardLight = MeasureWindow(live, "浅色（建窗时）", sb, out n, out wa, out worstLive);
+
             Color cBefore = FindTextColor(live, "CPU 使用率");
             ThemeManager.Apply(ThemeManager.Dark);
             live.UpdateLayout();
             Color cAfter = FindTextColor(live, "CPU 使用率");
+            int hardAfterDark = MeasureWindow(live, "切到深色后", sb, out n, out wa, out worstLive);
+
             ThemeManager.Apply(ThemeManager.Light);
             live.UpdateLayout();
             Color cBack = FindTextColor(live, "CPU 使用率");
+            int hardBackLight = MeasureWindow(live, "切回浅色后", sb, out n, out wa, out worstLive);
 
             ThemeManager.Apply(ThemeManager.Dark);
             Color darkToken = ThemeManager.ColorOf("TextPrimary");
@@ -154,11 +148,16 @@ namespace PerfOverlay.Services
 
             bool toDark = Same(cAfter, darkToken) && !Same(cAfter, cBefore);
             bool toLight = Same(cBack, lightToken) && !Same(cBack, cAfter);
-            sb.AppendLine(string.Format("   浅→深：{0} → {1}（深色 token {2}）{3}",
+            sb.AppendLine(string.Format("   浅→深 token：{0} → {1}（深色 token {2}）{3}",
                 Hex(cBefore), Hex(cAfter), Hex(darkToken), toDark ? "OK" : "✗"));
-            sb.AppendLine(string.Format("   深→浅：{0} → {1}（浅色 token {2}）{3}",
+            sb.AppendLine(string.Format("   深→浅 token：{0} → {1}（浅色 token {2}）{3}",
                 Hex(cAfter), Hex(cBack), Hex(lightToken), toLight ? "OK" : "✗"));
             if (!toDark || !toLight) fails++;
+            if (hardLight > 0 || hardAfterDark > 0 || hardBackLight > 0)
+            {
+                fails++;
+                sb.AppendLine("   ✗ 就地切换后仍有文字看不清 —— 多半是视图里用 StaticResource 引了颜色 token");
+            }
 
             ThemeManager.Apply(ThemeManager.Light);
 
@@ -172,6 +171,39 @@ namespace PerfOverlay.Services
         }
 
         // ==================================================================
+
+        /// <summary>
+        /// 量一棵视觉树里所有可见文字与各自真实底色的对比度，返回「硬性不足」的条数。
+        /// 低于 HardMin 的逐条打出来（最多 8 条，够定位是哪一块），方便一眼看出是全盘失效
+        /// 还是只有某几个标签。
+        /// </summary>
+        private static int MeasureWindow(DependencyObject root, string label, StringBuilder sb,
+                                         out int nodes, out int warn, out double worst)
+        {
+            nodes = 0; warn = 0; worst = 99;
+            int hard = 0;
+            string worstDesc = "";
+
+            foreach (var t in CollectText(root))
+            {
+                Color fg = t.Item1, bg = t.Item2;
+                double ratio = Contrast(fg, bg);
+                nodes++;
+                if (ratio < worst) { worst = ratio; worstDesc = t.Item3; }
+                if (ratio < HardMin)
+                {
+                    hard++;
+                    if (hard <= 8)
+                        sb.AppendLine(string.Format("   ✗ [{0}] 对比度 {1:0.00}：{2}  字#{3:X2}{4:X2}{5:X2} 底#{6:X2}{7:X2}{8:X2}",
+                            label, ratio, t.Item3, fg.R, fg.G, fg.B, bg.R, bg.G, bg.B));
+                }
+                else if (ratio < AaMin) warn++;
+            }
+
+            sb.AppendLine(string.Format("   [{0}] 节点 {1}，硬性不足 {2}，AA 未达 {3}，最低 {4:0.00}（{5}）",
+                label, nodes, hard, warn, worst, worstDesc));
+            return hard;
+        }
 
         /// <summary>按文字内容找第一个可见 TextBlock 的前景色（在线切换断言用）。</summary>
         private static Color FindTextColor(DependencyObject root, string text)

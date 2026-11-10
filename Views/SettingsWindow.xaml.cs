@@ -61,6 +61,15 @@ namespace PerfOverlay.Views
         public System.Windows.FrameworkElement ContentArea { get { return ContentRoot; } }
 
         /// <summary>
+        /// 诊断用：主题三档（浅色 / 深色 / 跟随系统）。带上缩略图后这一排变宽不少，
+        /// 是最容易被挤窄或顶出卡片右界的一行，必须有 rect 可量。
+        /// </summary>
+        public System.Windows.FrameworkElement[] ThemeSegments()
+        {
+            return new System.Windows.FrameworkElement[] { SegThemeLight, SegThemeDark, SegThemeAuto };
+        }
+
+        /// <summary>
         /// 诊断用：内容在给定宽度下需要多高。窗口是 SizeToContent=Height，
         /// 所以这个值应当等于 ActualHeight；两者一致就说明没有被裁掉、
         /// 也不需要滚动条。

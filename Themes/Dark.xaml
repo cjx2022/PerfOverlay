@@ -45,6 +45,7 @@
     <Color x:Key="SegBorderColor">#FF2A3644</Color>
     <Color x:Key="SegBorderCheckedColor">#FF3E5F8E</Color>
     <Color x:Key="GhostBorderColor">#FF2C3949</Color>
+    <Color x:Key="DangerSoftColor">#FF2B1B1E</Color>
     <Color x:Key="DangerColor">#FFFF7B72</Color>
     <Color x:Key="ShadowColor">#FF000000</Color>
 
@@ -81,6 +82,7 @@
     <SolidColorBrush x:Key="SegBorder" Color="{StaticResource SegBorderColor}" />
     <SolidColorBrush x:Key="SegBorderChecked" Color="{StaticResource SegBorderCheckedColor}" />
     <SolidColorBrush x:Key="GhostBorder" Color="{StaticResource GhostBorderColor}" />
+    <SolidColorBrush x:Key="DangerSoft" Color="{StaticResource DangerSoftColor}" />
     <SolidColorBrush x:Key="Danger" Color="{StaticResource DangerColor}" />
     <SolidColorBrush x:Key="ShadowBrush" Color="{StaticResource ShadowColor}" />
 

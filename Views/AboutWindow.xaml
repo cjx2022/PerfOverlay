@@ -25,9 +25,9 @@
             <Grid Grid.Row="0" Height="40" Background="{DynamicResource TitleBarBg}" MouseLeftButtonDown="OnTitleBarMouseDown">
                 <StackPanel Orientation="Horizontal" Margin="18,0" VerticalAlignment="Center">
                     <TextBlock Text="版本与更新" FontSize="13.5" FontWeight="SemiBold"
-                               Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center" />
+                               Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center" />
                     <TextBlock Text="PerfOverlay" FontSize="11"
-                               Foreground="{StaticResource TextSecondary}"
+                               Foreground="{DynamicResource TextSecondary}"
                                Margin="8,1,0,0" VerticalAlignment="Center" />
                 </StackPanel>
 
@@ -55,10 +55,10 @@
             <StackPanel Grid.Row="1" Margin="20,16,20,18">
                 <TextBlock x:Name="TxtVersion" Text="v0.0.0"
                            FontSize="21" FontWeight="SemiBold"
-                           Foreground="{StaticResource TextPrimary}" />
+                           Foreground="{DynamicResource TextPrimary}" />
 
                 <TextBlock Text="单文件免安装 · Windows 10 1809+ / 11 x64 · MIT 许可"
-                           FontSize="11.5" Foreground="{StaticResource TextSecondary}"
+                           FontSize="11.5" Foreground="{DynamicResource TextSecondary}"
                            TextWrapping="Wrap" Margin="0,6,0,0" />
 
                 <!-- 状态条：检查结果都落在这里，避免弹对话框打断操作 -->
@@ -76,7 +76,7 @@
                         <TextBlock x:Name="TxtStatus" Grid.Column="1"
                                    Text="正在查询 GitHub 上的最新版本…"
                                    FontSize="12.5" LineHeight="19"
-                                   Foreground="{StaticResource TextPrimary}"
+                                   Foreground="{DynamicResource TextPrimary}"
                                    TextWrapping="Wrap" />
                     </Grid>
                 </Border>

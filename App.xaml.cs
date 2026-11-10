@@ -650,13 +650,33 @@ namespace PerfOverlay
             if (!posSameRow || !posSameW || !posFits) fails++;
 
             // 热键框：与位置按钮组右端对齐、够放长组合、不越卡片右界
-            var hk = w.HotkeyBoxElement;
-            var hkPos = hk.TranslatePoint(new System.Windows.Point(0, 0), w);
+            var hk = w.HotkeyBoxElement;            var hkPos = hk.TranslatePoint(new System.Windows.Point(0, 0), w);
             double behaviorRight = rects[2].Right - 15.0;   // 卡片左右内边距 15
             bool hkInside = hkPos.X + hk.ActualWidth <= behaviorRight + 0.5;
             bool hkRightAligned = Math.Abs((hkPos.X + hk.ActualWidth) - posRight) <= 1.0;
             bool hkWide = hk.ActualWidth >= 120.0;
             if (!hkInside || !hkRightAligned || !hkWide) fails++;
+
+            // 主题三档：带缩略图之后明显变宽，最容易「跟随系统」被挤窄或顶出卡片右界。
+            // 缩略图是固定尺寸的 Border，一旦被压缩会变成一条竖线，光看截图不一定看得出来。
+            var themeBtns = w.ThemeSegments();
+            double themeTop = themeBtns[0].TranslatePoint(new System.Windows.Point(0, 0), w).Y;
+            double appearanceRight = rects[1].Right - 15.0;   // 外观卡片右内边
+            bool themeSameRow = true, themeFits = true, themeInside = true;
+            var themeDetail = new StringBuilder();
+            for (int i = 0; i < themeBtns.Length; i++)
+            {
+                var b = themeBtns[i];
+                var p = b.TranslatePoint(new System.Windows.Point(0, 0), w);
+                if (Math.Abs(p.Y - themeTop) > 0.5) themeSameRow = false;
+                double needW = b.DesiredSize.Width - b.Margin.Left - b.Margin.Right;
+                if (b.ActualWidth + 0.5 < needW) { themeFits = false; themeDetail.Append(" 压窄:").Append(i); }
+                if (p.X + b.ActualWidth > appearanceRight + 0.5) { themeInside = false; themeDetail.Append(" 越界:").Append(i); }
+            }
+            double themeRightEdge = themeBtns[2].TranslatePoint(new System.Windows.Point(0, 0), w).X
+                                    + themeBtns[2].ActualWidth;
+            bool themeOk = themeSameRow && themeFits && themeInside;
+            if (!themeOk) fails++;
 
             // 通用检查（不只盯复位按钮）：任何一个按钮都不许被压窄，也不许越出内容区右边界。
             // 底栏并进右下卡片后，一行里并排两个按钮，最容易在这里悄悄压掉内边距。
@@ -765,8 +785,10 @@ namespace PerfOverlay
                 hkPos.X, hkPos.X + hk.ActualWidth, posRight, behaviorRight, hk.ActualWidth,
                 (hkInside && hkRightAligned && hkWide) ? "OK" : "FAIL（不对齐或越界）"));
             sb.AppendLine(string.Format("   全部按钮  = {0} 个，压缩 {1} / 越界 {2} => {3}",
-                btnChecked, squeezed, overflow, btnsOk ? "OK" : "FAIL"));
-            if (!btnsOk && badBtns.Length > 0) sb.AppendLine("     明细：" + badBtns.ToString().Trim());
+                btnChecked, squeezed, overflow, btnsOk ? "OK" : "FAIL"));            if (!btnsOk && badBtns.Length > 0) sb.AppendLine("     明细：" + badBtns.ToString().Trim());
+            sb.AppendLine(string.Format("   主题三档  = 同行 {0} / 未被压窄 {1} / 不越右界 {2}（右端 {3:0.0} ≤ {4:0.0}）=> {5}",
+                themeSameRow ? "OK" : "FAIL", themeFits ? "OK" : "FAIL", themeInside ? "OK" : "FAIL",
+                themeRightEdge, appearanceRight, themeOk ? "OK" : "FAIL" + themeDetail));
             sb.AppendLine(string.Format("   显示项目两列 = 左列对齐 {0} / 右列对齐 {1} / 同行顶对齐 {2} / 列间 {3:0.0} DIP / 文字够 {4} => {5}",
                 colA ? "OK" : "FAIL", colB ? "OK" : "FAIL", rowsTied ? "OK" : "FAIL",
                 colGapDip, textFits ? "OK" : "FAIL", metricsOk ? "OK" : "FAIL"));

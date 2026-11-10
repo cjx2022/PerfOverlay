@@ -14,10 +14,10 @@
     <Color x:Key="CardBorderColor">#FFE2ECFA</Color>
     <Color x:Key="TextPrimaryColor">#FF182A40</Color>
     <Color x:Key="TextSecondaryColor">#FF5F7590</Color>
-    <Color x:Key="TextHintColor">#FF6F849C</Color>
+    <Color x:Key="TextHintColor">#FF66788E</Color>
     <Color x:Key="AccentColor">#FF2C6BF0</Color>
     <Color x:Key="AccentHoverColor">#FF1E56D5</Color>
-    <Color x:Key="AccentTextColor">#FF2C6BF0</Color>
+    <Color x:Key="AccentTextColor">#FF2560E0</Color>
     <Color x:Key="AccentSoftColor">#FFE9F0FE</Color>
     <Color x:Key="TrackBgColor">#FFD9E6F8</Color>
     <Color x:Key="WindowBorderColor">#FFD3E2F7</Color>
@@ -42,6 +42,7 @@
     <Color x:Key="SegBorderColor">#FFDCE8F9</Color>
     <Color x:Key="SegBorderCheckedColor">#FF9DC0F8</Color>
     <Color x:Key="GhostBorderColor">#FFD6E4F8</Color>
+    <Color x:Key="DangerSoftColor">#FFFDF1F1</Color>
     <Color x:Key="DangerColor">#FFC0392B</Color>
     <Color x:Key="ShadowColor">#FF26456B</Color>
 
@@ -78,6 +79,7 @@
     <SolidColorBrush x:Key="SegBorder" Color="{StaticResource SegBorderColor}" />
     <SolidColorBrush x:Key="SegBorderChecked" Color="{StaticResource SegBorderCheckedColor}" />
     <SolidColorBrush x:Key="GhostBorder" Color="{StaticResource GhostBorderColor}" />
+    <SolidColorBrush x:Key="DangerSoft" Color="{StaticResource DangerSoftColor}" />
     <SolidColorBrush x:Key="Danger" Color="{StaticResource DangerColor}" />
     <SolidColorBrush x:Key="ShadowBrush" Color="{StaticResource ShadowColor}" />
 

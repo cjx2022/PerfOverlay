@@ -24,7 +24,7 @@
             <!-- 标题栏 -->
             <Grid Grid.Row="0" Height="38" Background="{DynamicResource TitleBarBg}" MouseLeftButtonDown="OnTitleBarMouseDown">
                 <TextBlock Text="CPU 温度" FontSize="13" FontWeight="SemiBold"
-                           Foreground="{StaticResource TextPrimary}"
+                           Foreground="{DynamicResource TextPrimary}"
                            Margin="18,0" VerticalAlignment="Center" />
 
                 <Button Width="28" Height="28" HorizontalAlignment="Right"
@@ -58,18 +58,18 @@
                                    Margin="0,0,0,1" />
                     </Grid>
                     <TextBlock x:Name="TxtHead" FontSize="14" FontWeight="SemiBold"
-                               Foreground="{StaticResource TextPrimary}"
+                               Foreground="{DynamicResource TextPrimary}"
                                Margin="9,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" />
                 </StackPanel>
 
                 <TextBlock x:Name="TxtBody" FontSize="12.5" LineHeight="20"
-                           Foreground="{StaticResource TextSecondary}"
+                           Foreground="{DynamicResource TextSecondary}"
                            Margin="0,12,0,0" TextWrapping="Wrap" />
 
                 <Border x:Name="BoxStatus" CornerRadius="7" Padding="11,8" Margin="0,12,0,0"
                         Background="{DynamicResource SoftBox}" Visibility="Collapsed">
                     <TextBlock x:Name="TxtStatus" FontSize="12" LineHeight="18"
-                               Foreground="{StaticResource TextPrimary}" TextWrapping="Wrap" />
+                               Foreground="{DynamicResource TextPrimary}" TextWrapping="Wrap" />
                 </Border>
 
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">

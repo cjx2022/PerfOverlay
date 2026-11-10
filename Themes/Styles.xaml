@@ -165,12 +165,17 @@
         <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="Margin" Value="0,0,6,0" />
+        <!-- 默认内边距放 Setter 里，模板用 TemplateBinding 透传：以前模板把 14,6 写死，
+             实例上写的 Padding="12,5" 全部无效 —— 这类「写了没生效」最容易在加内容后
+             变成悄悄越界，所以模板必须尊重实例值。 -->
+        <Setter Property="Padding" Value="14,6" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="RadioButton">
                     <Border x:Name="Bd" Background="{DynamicResource SegBg}"
                             BorderBrush="{DynamicResource SegBorder}"
-                            BorderThickness="1" CornerRadius="7" Padding="14,6">
+                            BorderThickness="1" CornerRadius="7"
+                            Padding="{TemplateBinding Padding}">
                         <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                     </Border>
                     <ControlTemplate.Triggers>

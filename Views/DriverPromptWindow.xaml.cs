@@ -99,12 +99,11 @@ namespace PerfOverlay.Views
         private void SetStatus(string text, bool isError)
         {
             BoxStatus.Visibility = Visibility.Visible;
-            BoxStatus.Background = isError
-                ? new SolidColorBrush(Color.FromRgb(0xFD, 0xF0, 0xF0))
-                : new SolidColorBrush(Color.FromRgb(0xF3, 0xF7, 0xFD));
-            TxtStatus.Foreground = isError
-                ? new SolidColorBrush(Color.FromRgb(0xB4, 0x2A, 0x2A))
-                : new SolidColorBrush(Color.FromRgb(0x33, 0x44, 0x55));
+            // 一律走资源引用：new 一个固定画刷会在换主题后留下「红底浅字」这种半旧配色
+            BoxStatus.SetResourceReference(System.Windows.Controls.Border.BackgroundProperty,
+                isError ? "DangerSoft" : "SoftBox");
+            TxtStatus.SetResourceReference(System.Windows.Controls.TextBlock.ForegroundProperty,
+                isError ? "Danger" : "TextPrimary");
             TxtStatus.Text = text;
         }
 
