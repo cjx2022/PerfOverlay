@@ -48,6 +48,12 @@ namespace PerfOverlay.Views
             CtxMenu.IsOpen = true;
         }
 
+        /// <summary>
+        /// 诊断用：右键菜单本体（主题体检要遍历它的文字颜色与底色）。
+        /// 正常运行时不会碰。
+        /// </summary>
+        internal System.Windows.Controls.ContextMenu CtxMenuForProbe { get { return CtxMenu; } }
+
         public event EventHandler SettingsRequested;
         public event EventHandler HideRequested;
         public event EventHandler ExitRequested;

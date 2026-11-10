@@ -32,10 +32,15 @@ namespace PerfOverlay.Services
         public bool GpuOk;
         public string GpuDetail = "";
 
-        /// <summary>CT = CPU 温度（ACPI 热区优先；读不到时走 PawnIO：AMD 读 SMN、Intel 读 MSR）。</summary>
+        /// <summary>CT = CPU 温度（驱动优先；驱动不可用或读数成死值时回退 ACPI 热区）。</summary>
         public double TempCpuC;
         public bool TempCpuOk;
         public string TempCpuDetail = "";
+
+        /// <summary>上一帧 CT 实际用的来源："pawn"（SMN/MSR）或 "acpi"（热区）。空 = 没读到。</summary>
+        public string TempCpuSource = "";
+        /// <summary>该来源的读数是否已被判定为「长时间不变」。UI 不用它，留给 --selftest 与排障。</summary>
+        public bool TempCpuSuspect;
 
         /// <summary>
         /// CT 的取数状态，只给界面判断要不要弹「安装温度组件」用：
@@ -75,8 +80,19 @@ namespace PerfOverlay.Services
         private AcpiTempProbe _temp;
         /// <summary>ACPI 兜底路径的「读数是否长时间不动」监控（见 FreezeWatch）。</summary>
         private readonly FreezeWatch _acpiFreeze = new FreezeWatch();
-        // CPU 温度：第二级 PawnIO + AMDFamily17 读 SMN。只有第一级失败、且用户真的
-        // 点过「安装温度组件」之后才会被创建 —— 没装的机器上这个对象连影子都没有。
+        /// <summary>驱动路径的同一套监视：驱动也可能坏成「每次都回同一个值」。</summary>
+        private readonly FreezeWatch _pawnFreeze = new FreezeWatch();
+        /// <summary>上一帧选中的取数来源（"pawn" / "acpi"），用于切换后的保持期。</summary>
+        private string _tempChoice = "";
+        private int _tempChoiceAt;
+        /// <summary>ACPI 每 2 秒才真读一次：WMI 查询比一次 SMN 读慢两个数量级，没必要每帧都做。</summary>
+        private int _acpiLastRead;
+        private double _acpiCachedC;
+        private bool _acpiCachedOk;
+        private bool _acpiFrozenState;
+
+        // CPU 温度：第二级 PawnIO + AMDFamily17 读 SMN。只要架构在支持范围内就建起来试一次
+        // （不能等 ACPI 失败才建，否则 BIOS 给个恒定占位值时驱动永远轮不到）。
         private PawnIoCpuTemp _pawnTemp;
         /// <summary>保护 _pawnTemp 的创建/替换/释放：采样线程与 UI 线程都会碰它。</summary>
         private readonly object _tempGate = new object();
@@ -121,23 +137,23 @@ namespace PerfOverlay.Services
         /// CT 当前的取数状态，给设置面板判断要不要显示感叹号。
         /// 只读，不会触发安装 —— 驱动不在就是 not_installed，仅此而已。
         ///
-        /// 先看「上一帧到底有没有读到温度」：能读到就报 ready。感叹号的语义是
-        /// **「CT 读不出来」**，不是「你还没装我的驱动」—— 用户的 BIOS 已经有热区、
-        /// 温度一直在跳的机器上弹一个「去装组件」，纯属骚扰。
+        /// 语义是**「CT 读不到可信温度」**，不是「你还没装我的驱动」：
+        ///   · 读到可信值 → ready（BIOS 热区正常工作的机器上不该弹「去装组件」）；
+        ///   · 只有一路能读、但那一路是恒定死值（典型：固件 28℃ 占位）→ 报装驱动能解决的状态，
+        ///     因为这时候用户看到的数就是假的，提示才有意义。
         /// </summary>
         public string CpuTempState
         {
             get
             {
-                if (_cpuTempLive) return "ready";
-                if (_pawnTemp != null) return _pawnTemp.DriverState;
+                if (_cpuTempState != null) return _cpuTempState;
                 if (_temp != null && _temp.Probe()) return "ready";
                 return PawnIoCpuTemp.IsSupportedCpu ? "not_installed" : "unsupported";
             }
         }
 
-        /// <summary>上一帧 CT 是否读到了有效值（任一来源）。CpuTempState 用它压掉误报的感叹号。</summary>
-        private volatile bool _cpuTempLive;
+        /// <summary>上一帧的 CT 取数状态（由采样线程写入）。null = 还没采过。</summary>
+        private volatile string _cpuTempState;
 
         /// <summary>装完驱动后调用：让温度探针重新走一遍（包括重新打开设备）。</summary>
         public void ResetCpuTempProbe()
@@ -156,6 +172,15 @@ namespace PerfOverlay.Services
                 }
                 if (_pawnTemp != null) _pawnTemp.Probe();
             }
+
+            // 刚装完驱动，之前的「恒定值」结论全部作废：不重置的话，新装的驱动要等
+            // 监视窗口（4 分钟）走完才可能被选中，用户会以为「装了没用」。
+            _pawnFreeze.Reset();
+            _acpiFreeze.Reset();
+            _tempChoice = "";
+            _tempChoiceAt = 0;
+            _acpiLastRead = 0;
+            _cpuTempState = null;
         }
 
         public void Start(AppSettings settings)
@@ -304,18 +329,19 @@ namespace PerfOverlay.Services
                 //
                 // 注意这里 **不会** 触发安装：驱动不存在时 PawnIoBridge 打开设备会立刻失败
                 // （ERROR_FILE_NOT_FOUND），结论由 Probe() 缓存，之后每帧只是一次 bool 返回。
-                bool pawnReady = false;
                 if (PawnIoCpuTemp.IsSupportedCpu)
                 {
                     lock (_tempGate)
                     {
                         if (_pawnTemp == null) _pawnTemp = new PawnIoCpuTemp();
-                        pawnReady = _pawnTemp.Probe();
+                        _pawnTemp.Probe();
                     }
                 }
 
-                // ACPI 只在驱动不可用时兜底。这里仍先探一次：没装驱动的机器靠它才出得了温度。
-                if (!pawnReady) _temp.Probe();
+                // ACPI 这一路现在**始终探一次**（不只是驱动失败时）：它是判定「驱动读数是不是
+                // 死值」的对照样本 —— 没有第二路的值，就无从知道某一路的恒定是异常还是空闲。
+                // 代价只有每 2 秒一次 WMI 查询（见 FillCpuTemp 里的采样节流）。
+                _temp.Probe();
             }
             else
             {
@@ -324,6 +350,16 @@ namespace PerfOverlay.Services
                     _temp.Dispose();
                     _temp = null;
                 }
+                // 关掉后把「死值」结论一起清掉：下次再打开时重新观察，
+                // 不能拿上次会话的冻结状态去判定新会话（时间戳对不上）。
+                _acpiFreeze.Reset();
+                _pawnFreeze.Reset();
+                _acpiLastRead = 0;
+                _acpiCachedOk = false;
+                _acpiFrozenState = false;
+                _tempChoice = "";
+                _tempChoiceAt = 0;
+                _cpuTempState = null;
                 lock (_tempGate)
                 {
                     if (_pawnTemp != null)
@@ -455,87 +491,224 @@ namespace PerfOverlay.Services
         }
 
         /// <summary>
-        /// CPU 温度：两级，**驱动优先、ACPI 兜底**。
+        /// CPU 温度：两路取数（PawnIO 读 SMN/MSR、ACPI 读热区），**驱动优先、ACPI 兜底**，
+        /// 并按「读数是否成了死值」自动切换来源。
         ///
-        /// 顺序在 0.9.6 之前是反的（先 ACPI），代价很实在：ACPI 热区是固件转述的数，
-        /// 大量台式板/笔记本 BIOS 直接回一个恒定占位值（用户实测恒为 28℃，装完驱动也不变）。
-        /// 那种值能通过合理性闸门，于是链路在第一级就 return，**用户装的驱动一次都没被调用**，
-        /// 表现出来就是「装了组件，温度还是一动不动」。既然用户装驱动的目的就是要真 die 读数，
-        /// 那就该让 SMN 先答；ACPI 只在 SMN 不可用时兜底。
+        /// 三条设计约束，都是踩出来的：
         ///
+        /// 1) 顺序必须是驱动优先。ACPI 热区是固件转述的数，大量台式板/笔记本 BIOS 直接回
+        ///    一个恒定占位值（用户实测恒为 28℃，装完驱动也一次没被调用过 —— 因为老实现
+        ///    只要 ACPI 有值就 return）。用户装驱动的目的就是要真 die 读数，那就该 SMN 先答。
+        ///
+        /// 2) 恒定值本身是异常信号。两路都读得到时，如果一路连续 4 分钟一字不差、
+        ///    而另一路确实会变（历史读数里出现过 ≥2 个不同值），就把死值那一路降级 ——
+        ///    这正是「装了驱动仍显示 28℃」与「驱动坏成固定值」的共同特征。
+        ///    两路都死时留在驱动：真 die 传感器即使空闲也不该比固件占位值更可疑。
+        ///
+        /// 3) 切换要有保持期（HoldMs）。否则一路在临界点抖动时读数会每 0.5 秒跳一次，
+        ///    比不切换还难读。
+        ///
+        /// ACPI 每 2 秒才真读一次（WMI 查询比一次 SMN 读慢两个数量级）；驱动每帧都读。
         /// 两条都失败时把结论写进快照，UI 据此决定要不要给感叹号：
         ///   not_installed / no_access / module_failed / read_failed —— 见 PawnIoCpuTemp.DriverState
         ///   unsupported —— 架构不在支持范围，且 ACPI 也没有
         /// </summary>
         private void FillCpuTemp(MetricsSnapshot snap)
         {
-            double t;
-            string why = "";
+            int now = Environment.TickCount;
+
+            // ---- 第一路：PawnIO（读 die 内温度传感器）----
+            double pawnC = 0;
+            bool pawnOk = false;
             string pawnWhy = "";
             string pawnState = "";
 
-            // ---- 第一级：PawnIO（读 die 内温度传感器）----
             lock (_tempGate)
             {
                 if (_pawnTemp != null)
                 {
                     _pawnTemp.Probe();
-                    if (_pawnTemp.TryRead(out t, out why))
+                    pawnOk = _pawnTemp.TryRead(out pawnC, out pawnWhy);
+                    if (!pawnOk)
                     {
-                        snap.TempCpuOk = true;
-                        snap.TempCpuC = t;
-                        snap.TempCpuDetail = "CPU 温度（SMN 寄存器，PawnIO）";
-                        snap.CpuTempState = "ready";
-                        _cpuTempLive = true;
-                        _acpiFreeze.Reset();   // 有真读数了，ACPI 那条线不再关注
-                        return;
+                        pawnWhy = _pawnTemp.Status;
+                        pawnState = _pawnTemp.DriverState;
                     }
-
-                    pawnWhy = _pawnTemp.Status;
-                    pawnState = _pawnTemp.DriverState;
                 }
             }
 
-            // ---- 第二级：ACPI 热区（零依赖，但可能是固件固定值）----
-            if (_temp != null && _temp.TryRead(out t, out why))
+            // ---- 第二路：ACPI 热区（零依赖，但可能是固件固定值）----
+            double acpiC = 0;
+            bool acpiOk = false;
+            if (_temp != null)
             {
-                bool frozen = _acpiFreeze.Add(t);
+                if (_acpiLastRead == 0 || unchecked(now - _acpiLastRead) >= 2000)
+                {
+                    string why;
+                    _acpiLastRead = now;
+                    _acpiCachedOk = _temp.TryRead(out _acpiCachedC, out why);
+                    // 只有真读到新值才喂监视器：把缓存值反复喂进去会把「没读到」算成「没变化」，
+                    // 那样的冻结判定是假的。
+                    if (_acpiCachedOk) _acpiFrozenState = _acpiFreeze.Add(_acpiCachedC);
+                }
+                acpiOk = _acpiCachedOk;
+                acpiC = _acpiCachedC;
+            }
+
+            // ---- 冻结判定 ----
+            bool pawnFrozen = pawnOk && _pawnFreeze.Add(pawnC);
+            bool acpiFrozen = acpiOk && _acpiFrozenState;
+
+            // 只有「另一路确实会变」时，才敢说这一路的恒定是异常
+            bool pawnSuspect = pawnFrozen && _acpiFreeze.Distinct >= 2;
+            bool acpiSuspect = acpiFrozen && _pawnFreeze.Distinct >= 2;
+
+            string pick = DecideTempSource(pawnOk, pawnSuspect, acpiOk, acpiSuspect);
+
+            // 保持期：刚切过去的那一路，只要还能读就再待一会儿
+            if (pick.Length > 0 && _tempChoice.Length > 0 && unchecked(now - _tempChoiceAt) < HoldMs)
+            {
+                if (_tempChoice == "pawn" && pawnOk) pick = "pawn";
+                else if (_tempChoice == "acpi" && acpiOk) pick = "acpi";
+            }
+
+            if (pick != _tempChoice)
+            {
+                _tempChoice = pick;
+                _tempChoiceAt = now;
+                if (pick.Length > 0)
+                {
+                    Diag("CpuTemp", string.Format(
+                        "来源切换为 {0}（pawn {1:0.00}℃ ok={2} 冻结={3} ／ acpi {4:0.00}℃ ok={5} 冻结={6}）",
+                        pick, pawnC, pawnOk, pawnFrozen, acpiC, acpiOk, acpiFrozen));
+                }
+            }
+
+            // ---- 出数 ----
+            if (pick == "pawn")
+            {
                 snap.TempCpuOk = true;
-                snap.TempCpuC = t;
-                snap.TempCpuDetail = "CPU 温度（ACPI 热区"
-                    + (_temp.SensorName.Length > 0 ? "：" + _temp.SensorName : "")
-                    + (frozen ? "；读数已 3 分钟未变化，多为固件固定值" : "")
+                snap.TempCpuC = pawnC;
+                snap.TempCpuSource = "pawn";
+                snap.TempCpuSuspect = pawnSuspect;
+                snap.TempCpuDetail = "CPU 温度（SMN 寄存器，PawnIO"
+                    + (acpiSuspect ? "；ACPI 热区读数长时间未变，已改用驱动直读" : "")
+                    + (pawnSuspect ? "；此读数已 " + (FreezeWindowMs / 60000) + " 分钟未变化，另一路在变" : "")
                     + "）";
                 snap.CpuTempState = "ready";
-                _cpuTempLive = true;
+                _cpuTempState = "ready";
                 return;
             }
 
-            string acpiWhy = why;
+            if (pick == "acpi")
+            {
+                snap.TempCpuOk = true;
+                snap.TempCpuC = acpiC;
+                snap.TempCpuSource = "acpi";
+                snap.TempCpuSuspect = acpiSuspect;
+                snap.TempCpuDetail = "CPU 温度（ACPI 热区"
+                    + (_temp.SensorName.Length > 0 ? "：" + _temp.SensorName : "")
+                    + (acpiSuspect ? "；驱动读数已 " + (FreezeWindowMs / 60000) + " 分钟未变化，已临时回退" : "")
+                    + (acpiFrozen && !acpiSuspect ? "；读数已长时间未变化，多为固件固定值" : "")
+                    + "）";
+                snap.CpuTempState = acpiSuspect
+                    ? (PawnIoCpuTemp.IsSupportedCpu ? "not_installed" : "unsupported")
+                    : "ready";
+                _cpuTempState = snap.CpuTempState;
+                if (acpiSuspect) snap.TempCpuDetail += "；建议装一次温度组件读真实值";
+                return;
+            }
 
-            // ---- 两级都没走通 ----
-            _cpuTempLive = false;
-            snap.CpuTempState = pawnState.Length > 0
+            // ---- 两路都没走通 ----
+            string acpiWhy = "";
+            if (_temp != null && !acpiOk)
+            {
+                double ignoredT;
+                _temp.TryRead(out ignoredT, out acpiWhy);
+            }
+
+            string state = pawnState.Length > 0
                 ? pawnState
                 : (PawnIoCpuTemp.IsSupportedCpu ? "not_installed" : "unsupported");
+
+            _cpuTempState = state;
+            snap.CpuTempState = state;
+            snap.TempCpuSource = "";
 
             if (pawnWhy.Length > 0) snap.TempCpuDetail = pawnWhy;
             else if (acpiWhy.Length > 0) snap.TempCpuDetail = acpiWhy;
         }
 
         /// <summary>
-        /// ACPI 读数冻结监控。ACPI 热区是固件给的数，恒定的占位值能骗过合理性闸门
-        /// （只拦 &lt;20℃），于是「一直 28℃」这种假值会长期冒充 CPU 温度。
-        /// 这里只做标注、不改数值：连续 3 分钟一字不差就在 tooltip 里点明，
-        /// 让用户知道该怀疑固件而不是怀疑程序。
+        /// 取数来源决策（纯函数，好测）。
+        /// pawnSuspect / acpiSuspect 的语义是「这一路读数已经是死值，而另一路确实会变」，
+        /// 判定在调用方做（要喂历史读数），这里只负责选择。
+        ///
+        /// 两路都可疑、或都正常时选驱动：真 die 传感器即使空闲也不该比固件占位值更可疑。
+        /// </summary>
+        internal static string DecideTempSource(bool pawnOk, bool pawnSuspect, bool acpiOk, bool acpiSuspect)
+        {
+            if (pawnOk && acpiOk)
+            {
+                if (acpiSuspect && !pawnSuspect) return "pawn";
+                if (pawnSuspect && !acpiSuspect) return "acpi";
+                return "pawn";
+            }
+            if (pawnOk) return "pawn";
+            if (acpiOk) return "acpi";
+            return "";
+        }
+
+        /// <summary>切源后的保持时长：够久到读数稳定，又不至于把用户锁在错的来源上。</summary>
+        private const int HoldMs = 60000;
+
+        /// <summary>冻结判定窗口：连续 4 分钟一字不差才算死值。</summary>
+        private const int FreezeWindowMs = 240000;
+
+        /// <summary>给自检/探针报告用的秒数（规则只有一处定义，报告不能再抄一份数字）。</summary>
+        public static int FreezeWindowSeconds { get { return FreezeWindowMs / 1000; } }
+        public static int HoldSeconds { get { return HoldMs / 1000; } }
+
+        /// <summary>温度来源切换留痕（只在这命 --diag 时写盘）。</summary>
+        private void Diag(string stage, string message)
+        {
+            if (!Diagnostic) return;
+            try
+            {
+                string path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "perfoverlay-error.log");
+                var fi = new System.IO.FileInfo(path);
+                if (fi.Exists && fi.Length > 256 * 1024) { try { System.IO.File.Delete(path); } catch (Exception) { } }
+                System.IO.File.AppendAllText(path,
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " [INF][" + stage + "] " + message
+                    + Environment.NewLine);
+            }
+            catch (Exception) { }
+        }
+
+        /// <summary>
+        /// 读数冻结监控（每一路一个）。
+        ///
+        /// 判定「死值」看两件事：
+        ///   · Frozen  —— 连续 FreezeWindowMs 一字不差（用 TickCount，天然处理 49 天回绕）；
+        ///   · Distinct —— 自程序启动以来见过几个不同读数。Distinct ≥ 2 说明这一路**会变**，
+        ///     于是另一路的「不变」才是可疑的；两路都不变就没有信息量，不能拿来判罪。
+        ///
+        /// 窗口取 4 分钟而不是 3 分钟：die 传感器分辨率 0.125℃，空闲时确实可能长时间同值，
+        /// 窗口太短会把正常空闲误判成死值。
         /// </summary>
         private sealed class FreezeWatch
         {
-            private const int WindowMs = 180000;
             private double _last = double.NaN;
             private int _since;
+            private int _distinct;
+            private bool _frozen;
 
-            /// <summary>记一次读数。返回 true 表示该值已经连续 WindowMs 没有变化。</summary>
+            /// <summary>见过的不同读数个数（≥2 表示这一路会变）。</summary>
+            public int Distinct { get { return _distinct; } }
+
+            /// <summary>上一次 Add 的结论：该值是否已连续一个窗口没有变化。</summary>
+            public bool Frozen { get { return _frozen; } }
+
             public bool Add(double v)
             {
                 int now = Environment.TickCount;
@@ -543,16 +716,21 @@ namespace PerfOverlay.Services
                 {
                     _last = v;
                     _since = now;
+                    _distinct++;
+                    _frozen = false;
                     return false;
                 }
                 // TickCount 约 49 天回绕一次，unchecked 让差值自然处理符号
-                return unchecked(now - _since) > WindowMs;
+                _frozen = unchecked(now - _since) > FreezeWindowMs;
+                return _frozen;
             }
 
             public void Reset()
             {
                 _last = double.NaN;
                 _since = 0;
+                _distinct = 0;
+                _frozen = false;
             }
         }
 

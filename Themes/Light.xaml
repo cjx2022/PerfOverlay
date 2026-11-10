@@ -1,0 +1,84 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- ==================================================================
+         浅色主题（白蓝）
+         ==================================================================
+         这个文件只放「颜色」，不放任何样式。Dark.xaml 必须有完全相同的键。
+         换主题 = 把这个字典整份换掉，所有引用一律用 DynamicResource —— 
+         用 StaticResource 的话，字典一换，已经解析过的值就冻在旧颜色上了。
+         ================================================================== -->
+
+    <Color x:Key="PageBgColor">#FFF3F8FE</Color>
+    <Color x:Key="CardBgColor">#FFFFFFFF</Color>
+    <Color x:Key="CardBorderColor">#FFE2ECFA</Color>
+    <Color x:Key="TextPrimaryColor">#FF182A40</Color>
+    <Color x:Key="TextSecondaryColor">#FF5F7590</Color>
+    <Color x:Key="TextHintColor">#FF6F849C</Color>
+    <Color x:Key="AccentColor">#FF2C6BF0</Color>
+    <Color x:Key="AccentHoverColor">#FF1E56D5</Color>
+    <Color x:Key="AccentTextColor">#FF2C6BF0</Color>
+    <Color x:Key="AccentSoftColor">#FFE9F0FE</Color>
+    <Color x:Key="TrackBgColor">#FFD9E6F8</Color>
+    <Color x:Key="WindowBorderColor">#FFD3E2F7</Color>
+    <Color x:Key="TitleBarBgColor">#FFFFFFFF</Color>
+    <Color x:Key="InputBgColor">#FFFFFFFF</Color>
+    <Color x:Key="CloseIconColor">#FF7E95B3</Color>
+    <Color x:Key="CloseHoverColor">#FFFDECEC</Color>
+    <Color x:Key="MenuBgColor">#FFFFFFFF</Color>
+    <Color x:Key="MenuBorderColor">#FFE2ECFA</Color>
+    <Color x:Key="MenuHoverColor">#FFE9F0FE</Color>
+    <Color x:Key="MenuSeparatorColor">#FFEDF2FA</Color>
+    <Color x:Key="SoftBoxColor">#FFF7FAFF</Color>
+    <Color x:Key="DotIdleColor">#FFB9C8DA</Color>
+    <Color x:Key="WarnColor">#FFF5A623</Color>
+    <Color x:Key="WarnHoverColor">#FFE08E10</Color>
+    <Color x:Key="SwatchRingColor">#FFC9D8EA</Color>
+    <Color x:Key="SwatchRingHoverColor">#FFB9CEEF</Color>
+    <Color x:Key="SwitchTrackOffColor">#FFCFDDEF</Color>
+    <Color x:Key="SwitchKnobColor">#FFFFFFFF</Color>
+    <Color x:Key="ScrollThumbColor">#FFC3D6EF</Color>
+    <Color x:Key="SegBgColor">#FFF7FAFF</Color>
+    <Color x:Key="SegBorderColor">#FFDCE8F9</Color>
+    <Color x:Key="SegBorderCheckedColor">#FF9DC0F8</Color>
+    <Color x:Key="GhostBorderColor">#FFD6E4F8</Color>
+    <Color x:Key="DangerColor">#FFC0392B</Color>
+    <Color x:Key="ShadowColor">#FF26456B</Color>
+
+    <SolidColorBrush x:Key="PageBg" Color="{StaticResource PageBgColor}" />
+    <SolidColorBrush x:Key="CardBg" Color="{StaticResource CardBgColor}" />
+    <SolidColorBrush x:Key="CardBorder" Color="{StaticResource CardBorderColor}" />
+    <SolidColorBrush x:Key="TextPrimary" Color="{StaticResource TextPrimaryColor}" />
+    <SolidColorBrush x:Key="TextSecondary" Color="{StaticResource TextSecondaryColor}" />
+    <SolidColorBrush x:Key="TextHint" Color="{StaticResource TextHintColor}" />
+    <SolidColorBrush x:Key="Accent" Color="{StaticResource AccentColor}" />
+    <SolidColorBrush x:Key="AccentHover" Color="{StaticResource AccentHoverColor}" />
+    <SolidColorBrush x:Key="AccentText" Color="{StaticResource AccentTextColor}" />
+    <SolidColorBrush x:Key="AccentSoft" Color="{StaticResource AccentSoftColor}" />
+    <SolidColorBrush x:Key="TrackBg" Color="{StaticResource TrackBgColor}" />
+    <SolidColorBrush x:Key="WindowBorder" Color="{StaticResource WindowBorderColor}" />
+    <SolidColorBrush x:Key="TitleBarBg" Color="{StaticResource TitleBarBgColor}" />
+    <SolidColorBrush x:Key="InputBg" Color="{StaticResource InputBgColor}" />
+    <SolidColorBrush x:Key="CloseIcon" Color="{StaticResource CloseIconColor}" />
+    <SolidColorBrush x:Key="CloseHoverBg" Color="{StaticResource CloseHoverColor}" />
+    <SolidColorBrush x:Key="MenuBg" Color="{StaticResource MenuBgColor}" />
+    <SolidColorBrush x:Key="MenuBorder" Color="{StaticResource MenuBorderColor}" />
+    <SolidColorBrush x:Key="MenuHover" Color="{StaticResource MenuHoverColor}" />
+    <SolidColorBrush x:Key="MenuSeparator" Color="{StaticResource MenuSeparatorColor}" />
+    <SolidColorBrush x:Key="SoftBox" Color="{StaticResource SoftBoxColor}" />
+    <SolidColorBrush x:Key="DotIdle" Color="{StaticResource DotIdleColor}" />
+    <SolidColorBrush x:Key="Warning" Color="{StaticResource WarnColor}" />
+    <SolidColorBrush x:Key="WarningHover" Color="{StaticResource WarnHoverColor}" />
+    <SolidColorBrush x:Key="SwatchRing" Color="{StaticResource SwatchRingColor}" />
+    <SolidColorBrush x:Key="SwatchRingHover" Color="{StaticResource SwatchRingHoverColor}" />
+    <SolidColorBrush x:Key="SwitchTrackOff" Color="{StaticResource SwitchTrackOffColor}" />
+    <SolidColorBrush x:Key="SwitchKnob" Color="{StaticResource SwitchKnobColor}" />
+    <SolidColorBrush x:Key="ScrollThumb" Color="{StaticResource ScrollThumbColor}" />
+    <SolidColorBrush x:Key="SegBg" Color="{StaticResource SegBgColor}" />
+    <SolidColorBrush x:Key="SegBorder" Color="{StaticResource SegBorderColor}" />
+    <SolidColorBrush x:Key="SegBorderChecked" Color="{StaticResource SegBorderCheckedColor}" />
+    <SolidColorBrush x:Key="GhostBorder" Color="{StaticResource GhostBorderColor}" />
+    <SolidColorBrush x:Key="Danger" Color="{StaticResource DangerColor}" />
+    <SolidColorBrush x:Key="ShadowBrush" Color="{StaticResource ShadowColor}" />
+
+</ResourceDictionary>

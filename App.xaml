@@ -5,6 +5,11 @@
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
+                <!-- 主题字典必须独立一项、且在 Styles.xaml 之前：
+                     ThemeManager 靠「替换这一项」切主题；Styles.xaml 只放样式，
+                     颜色一律 DynamicResource 引用前一项里的键。
+                     这里默认合并浅色，深色在启动时由 ThemeManager.Apply 换掉。 -->
+                <ResourceDictionary Source="Themes/Light.xaml" />
                 <ResourceDictionary Source="Themes/Styles.xaml" />
             </ResourceDictionary.MergedDictionaries>
         </ResourceDictionary>

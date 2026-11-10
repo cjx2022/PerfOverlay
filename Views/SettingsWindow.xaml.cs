@@ -109,6 +109,12 @@ namespace PerfOverlay.Views
             else if (_s.RefreshMs <= 1000) SegR1000.IsChecked = true;
             else SegR2000.IsChecked = true;
 
+            string theme = ThemeManager.Resolve(_s.Theme);
+            bool isAuto = string.Equals((_s.Theme ?? "").Trim(), ThemeManager.Auto, StringComparison.OrdinalIgnoreCase);
+            if (isAuto) SegThemeAuto.IsChecked = true;
+            else if (theme == ThemeManager.Dark) SegThemeDark.IsChecked = true;
+            else SegThemeLight.IsChecked = true;
+
             SldOpacity.Value = _s.Opacity;
             TxtOpacity.Text = ((int)Math.Round(_s.Opacity * 100)).ToString() + "%";
 
@@ -256,6 +262,10 @@ namespace PerfOverlay.Views
             else if (SegR1000.IsChecked == true) _s.RefreshMs = 1000;
             else _s.RefreshMs = 2000;
 
+            if (SegThemeDark.IsChecked == true) _s.Theme = ThemeManager.Dark;
+            else if (SegThemeAuto.IsChecked == true) _s.Theme = ThemeManager.Auto;
+            else _s.Theme = ThemeManager.Light;
+
             _s.Opacity = SldOpacity.Value;
             _s.ShowOutline = ChkOutline.IsChecked == true;
 
@@ -310,6 +320,25 @@ namespace PerfOverlay.Views
         private void OnSizeChanged(object sender, RoutedEventArgs e) { Emit(); }
 
         private void OnRateChanged(object sender, RoutedEventArgs e) { Emit(); }
+
+        /// <summary>
+        /// 主题切换。这里立刻换，不等 SettingsChanged 绕回 App —— 否则「点了没反应」
+        /// 的感觉非常明显（尤其是面板自己是浅色、用户正要点深色）。
+        /// 托盘菜单是 WinForms，WPF 资源管不到，由 App.ApplySettings 里的同名判断补一次。
+        /// </summary>
+        private void OnThemeChanged(object sender, RoutedEventArgs e)
+        {
+            if (_loading) return;
+            ThemeManager.Apply(CollectTheme());
+            Emit();
+        }
+
+        private string CollectTheme()
+        {
+            if (SegThemeDark.IsChecked == true) return ThemeManager.Dark;
+            if (SegThemeAuto.IsChecked == true) return ThemeManager.Auto;
+            return ThemeManager.Light;
+        }
 
 
         private void OnOpacityChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -368,30 +397,34 @@ namespace PerfOverlay.Views
         public System.Windows.FrameworkElement HotkeyBoxElement { get { return HotkeyBox; } }
         public string HotkeyText { get { return TxtHotkey.Text; } }
 
-        private static readonly Brush BorderIdle = new SolidColorBrush(Color.FromRgb(0xD3, 0xE2, 0xF7));
-        private static readonly Brush BorderActive = new SolidColorBrush(Color.FromRgb(0x2C, 0x6B, 0xF0));
-        private static readonly Brush BorderError = new SolidColorBrush(Color.FromRgb(0xC0, 0x39, 0x2B));
+        /// <summary>按主题取色：错误红与聚焦蓝都由主题决定，深色下用更亮的红才看得清。</summary>
+        private Brush Res(string key)
+        {
+            try { return (Brush)FindResource(key); } catch (Exception) { return Brushes.Gray; }
+        }
 
         private void ShowHotkey(string spec, bool error, string errorText)
         {
             if (error)
             {
                 TxtHotkey.Text = errorText;
-                TxtHotkey.Foreground = BorderError;
-                HotkeyBox.BorderBrush = BorderError;
+                TxtHotkey.Foreground = Res("Danger");
+                HotkeyBox.BorderBrush = Res("Danger");
                 return;
             }
 
-            HotkeyBox.BorderBrush = BorderIdle;
+            // 空闲态与文字色都走资源引用，而不是 new 一个固定画刷：
+            // 换主题时这两处会自己跟着变，不用再手动回填（固定画刷是「切了主题还留一条浅蓝边」的元凶）。
+            HotkeyBox.SetResourceReference(System.Windows.Controls.Border.BorderBrushProperty, "WindowBorder");
             if (string.IsNullOrEmpty(spec))
             {
                 TxtHotkey.Text = "未设置";
-                TxtHotkey.Foreground = (Brush)FindResource("TextSecondary");
+                TxtHotkey.SetResourceReference(System.Windows.Controls.TextBlock.ForegroundProperty, "TextSecondary");
             }
             else
             {
                 TxtHotkey.Text = HotkeyService.Pretty(spec);
-                TxtHotkey.Foreground = (Brush)FindResource("TextPrimary");
+                TxtHotkey.SetResourceReference(System.Windows.Controls.TextBlock.ForegroundProperty, "TextPrimary");
             }
         }
 
@@ -400,8 +433,8 @@ namespace PerfOverlay.Views
             if (_loading) return;
             _capturingHotkey = true;
             TxtHotkey.Text = "按下组合键…";
-            TxtHotkey.Foreground = (Brush)FindResource("TextSecondary");
-            HotkeyBox.BorderBrush = BorderActive;
+            TxtHotkey.SetResourceReference(System.Windows.Controls.TextBlock.ForegroundProperty, "TextSecondary");
+            HotkeyBox.BorderBrush = Res("Accent");
             Keyboard.Focus(HotkeyBox);
             e.Handled = true;
         }

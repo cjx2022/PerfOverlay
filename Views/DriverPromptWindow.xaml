@@ -1,4 +1,4 @@
-﻿<Window x:Class="PerfOverlay.Views.DriverPromptWindow"
+<Window x:Class="PerfOverlay.Views.DriverPromptWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="CPU 温度"
@@ -7,13 +7,14 @@
         WindowStyle="None"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner"
-        Background="{StaticResource PageBg}"
+        Background="{DynamicResource PageBg}"
+        Foreground="{DynamicResource TextPrimary}"
         FontFamily="{StaticResource UiFont}"
         ShowInTaskbar="False"
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Ideal">
 
-    <Border BorderBrush="#FFD3E2F7" BorderThickness="1">
+    <Border BorderBrush="{DynamicResource WindowBorder}" BorderThickness="1">
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
@@ -21,7 +22,7 @@
             </Grid.RowDefinitions>
 
             <!-- 标题栏 -->
-            <Grid Grid.Row="0" Height="38" Background="White" MouseLeftButtonDown="OnTitleBarMouseDown">
+            <Grid Grid.Row="0" Height="38" Background="{DynamicResource TitleBarBg}" MouseLeftButtonDown="OnTitleBarMouseDown">
                 <TextBlock Text="CPU 温度" FontSize="13" FontWeight="SemiBold"
                            Foreground="{StaticResource TextPrimary}"
                            Margin="18,0" VerticalAlignment="Center" />
@@ -32,14 +33,14 @@
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
                             <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="7">
-                                <Path Data="M0,0 L9,9 M9,0 L0,9" Stroke="#FF7E95B3"
+                                <Path Data="M0,0 L9,9 M9,0 L0,9" Stroke="{DynamicResource CloseIcon}"
                                       StrokeThickness="1.5" StrokeStartLineCap="Round"
                                       StrokeEndLineCap="Round"
                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
                             </Border>
                             <ControlTemplate.Triggers>
                                 <Trigger Property="IsMouseOver" Value="True">
-                                    <Setter TargetName="Bd" Property="Background" Value="#FFFDECEC" />
+                                    <Setter TargetName="Bd" Property="Background" Value="{DynamicResource CloseHoverBg}" />
                                 </Trigger>
                             </ControlTemplate.Triggers>
                         </ControlTemplate>
@@ -51,7 +52,7 @@
             <StackPanel Grid.Row="1" Margin="20,16,20,16">
                 <StackPanel Orientation="Horizontal">
                     <Grid Width="20" Height="20" VerticalAlignment="Top">
-                        <Ellipse Fill="#FFF5A623" />
+                        <Ellipse Fill="{DynamicResource Warning}" />
                         <TextBlock Text="!" FontSize="13" FontWeight="Bold" Foreground="White"
                                    HorizontalAlignment="Center" VerticalAlignment="Center"
                                    Margin="0,0,0,1" />
@@ -66,7 +67,7 @@
                            Margin="0,12,0,0" TextWrapping="Wrap" />
 
                 <Border x:Name="BoxStatus" CornerRadius="7" Padding="11,8" Margin="0,12,0,0"
-                        Background="#FFF3F7FD" Visibility="Collapsed">
+                        Background="{DynamicResource SoftBox}" Visibility="Collapsed">
                     <TextBlock x:Name="TxtStatus" FontSize="12" LineHeight="18"
                                Foreground="{StaticResource TextPrimary}" TextWrapping="Wrap" />
                 </Border>

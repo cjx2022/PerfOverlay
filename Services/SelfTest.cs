@@ -95,6 +95,14 @@ namespace PerfOverlay.Services
                 OnOff(cfg.ShowVram), OnOff(cfg.ShowGpu), OnOff(cfg.ShowCpuTemp), OnOff(cfg.ShowGpuTemp),
                 OnOff(cfg.ShowClock)));
             w("配置来源: " + (File.Exists(SettingsStore.FilePath) ? SettingsStore.FilePath : "无配置文件（首启默认值）"));
+            w(string.Format("界面主题: 设置={0}  实际生效={1}  系统偏好深色={2}",
+                string.IsNullOrEmpty(cfg.Theme) ? "(未设置)" : cfg.Theme,
+                ThemeManager.Effective,
+                ThemeManager.SystemPrefersDark() ? "是" : "否"));
+            w("主题字典键对齐: " + (ThemeManager.KeyDiff().Length == 0
+                ? "OK（Light " + ThemeManager.KeyCount(ThemeManager.Light)
+                  + " 项 = Dark " + ThemeManager.KeyCount(ThemeManager.Dark) + " 项）"
+                : "FAIL：" + ThemeManager.KeyDiff()));
             w("迁移结论: " + (cfg.SchemaVersion >= 1
                 ? (cfg.ShowCpuTemp || cfg.ShowGpuTemp
                     ? "OK：旧配置里开着的温度已带到 CT/GT 两项"
@@ -219,6 +227,39 @@ namespace PerfOverlay.Services
                 foreach (string z in at.ZoneReadings) w("  " + z);
             }
             at.Dispose();
+            w("");
+
+            // 这一节是 0.9.6 新增规则的自证说明：用户报「温度恒定」时，先按这条规则判断
+            // 是固件占位值还是驱动坏成死值，再决定去查哪一边。
+            w("--- CPU 温度取数规则 ---");
+            w("默认：驱动优先（SMN/MSR），驱动不可用才用 ACPI 热区");
+            w(string.Format("恒值判定：同一路连续 {0} 秒读数一字不差，且另一路确实会变 → 自动改用会变的那一路",
+                MonitorHost.FreezeWindowSeconds));
+            w("切换后保持 " + (MonitorHost.HoldSeconds) + " 秒再重新评估；两路都不变时留在驱动");
+
+            // 决策是纯函数，直接把真值表跑一遍：不用等 4 分钟，也不依赖本机装没装驱动。
+            var cases = new[]
+            {
+                // pawnOk,  pawnSuspect, acpiOk, acpiSuspect, 期望, 说明
+                new object[] { true,  false, true,  true,  "pawn", "ACPI 恒定为固件占位值、驱动会变 → 用驱动（用户报的 28℃ 那种）" },
+                new object[] { true,  true,  true,  false, "acpi", "驱动坏成固定值、ACPI 会变 → 回退 ACPI" },
+                new object[] { true,  false, true,  false, "pawn", "两路都正常 → 驱动" },
+                new object[] { true,  true,  true,  true,  "pawn", "两路都不变 → 仍用驱动（无从判断谁在撒谎）" },
+                new object[] { true,  false, false, false, "pawn", "只有驱动能读" },
+                new object[] { false, false, true,  false, "acpi", "只有 ACPI 能读" },
+                new object[] { false, false, false, false, "",     "两路都没有" },
+            };
+            int bad = 0;
+            foreach (var c in cases)
+            {
+                string got = MonitorHost.DecideTempSource((bool)c[0], (bool)c[1], (bool)c[2], (bool)c[3]);
+                bool ok = got == (string)c[4];
+                if (!ok) bad++;
+                w(string.Format("  {0} pawn(ok={1},死值={2}) acpi(ok={3},死值={4}) → {5}  {6}",
+                    ok ? "OK  " : "FAIL", c[0], c[1], c[2], c[3],
+                    got.Length == 0 ? "(无)" : got, c[5]));
+            }
+            w("切源真值表: " + (bad == 0 ? "7/7 通过" : bad + " 项不符"));
             w("");
 
             w("--- 对照：NVML（仅 NVIDIA，已是兜底路径） ---");

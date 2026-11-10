@@ -185,6 +185,16 @@ namespace PerfOverlay
                 return;
             }
 
+            // ---- 主题体检：两套主题各开一次面板，量文字与底色的真实对比度 ----
+            if (HasArg(e.Args, "--theme-probe"))
+            {
+                int fails = 0;
+                try { fails = Services.ThemeProbe.Run(); }
+                catch (Exception ex) { LogError("ThemeProbe", ex); fails = 2; }
+                Shutdown(fails);
+                return;
+            }
+
             // ---- 版本窗口探针：开在屏幕外，自动查一次更新并量几何（截图与断言共用）----
             if (HasArg(e.Args, "--about"))
             {
@@ -255,7 +265,8 @@ namespace PerfOverlay
             // 也只允许重试一次。提权失败（被拒绝/策略禁止）时继续以普通权限运行，
             // CPU / 内存 / 显存照常工作，只有 FPS 显示 N/A。
             bool uiProbe = HasArg(e.Args, "--open-settings") || HasArg(e.Args, "--open-menu")
-                           || HasArg(e.Args, "--pawnio-status") || HasArg(e.Args, "--pawnio-install");
+                           || HasArg(e.Args, "--pawnio-status") || HasArg(e.Args, "--pawnio-install")
+                           || HasArg(e.Args, "--theme-probe") || HasArg(e.Args, "--tray-menu");
             if (!PrivilegeHelper.IsElevated
                 && !uiProbe
                 && !HasArg(e.Args, "--noelevate")
@@ -340,6 +351,15 @@ namespace PerfOverlay
 
             _settings = SettingsStore.Load();
             if (!_settings.FirstRunDone) _settings.FirstRunDone = true;
+
+            // 主题必须在建任何窗口之前应用：窗口 XAML 里的颜色全是 DynamicResource，
+            // 先有字典再建窗口，第一帧就是正确配色；反过来会先闪一帧浅色再变色。
+            ThemeManager.Apply(_settings.Theme);
+            // --theme dark / light / auto：只在本次运行覆盖配色，不写回配置。
+            // 截图与体检要能指定配色，又不能改用户的 settings.json。
+            string themeOverride = ArgValue(e.Args, "--theme");
+            if (!string.IsNullOrEmpty(themeOverride)) ThemeManager.Apply(themeOverride);
+            LogInfo("Theme", "effective=" + ThemeManager.Effective + " setting=" + (_settings.Theme ?? "(null)"));
 
             // ---- 温度探针：列出 LibreHardwareMonitor 能读到的所有温度传感器 ----
             if (HasArg(e.Args, "--temp-probe") || HasArg(e.Args, "--lhm-probe"))
@@ -518,6 +538,29 @@ namespace PerfOverlay
         {
             InitTray();
             if (_trayMenu == null) { Shutdown(2); return; }
+
+            // --menu-shot <png>：把菜单直接画到位图上（不依赖弹窗真的出现在屏幕上）。
+            // 托盘菜单的皮肤只能靠这个验证：弹窗在离屏位置时 EnumWindows 抓不到，截屏也拍空。
+            string shot = ArgValue(System.Environment.GetCommandLineArgs(), "--menu-shot");
+            if (!string.IsNullOrEmpty(shot))
+            {
+                try
+                {
+                    _trayMenu.CreateControl();
+                    _trayMenu.PerformLayout();
+                    using (var bmp = new Bitmap(Math.Max(1, _trayMenu.Width), Math.Max(1, _trayMenu.Height)))
+                    {
+                        _trayMenu.DrawToBitmap(bmp, new Rectangle(0, 0, bmp.Width, bmp.Height));
+                        bmp.Save(shot, System.Drawing.Imaging.ImageFormat.Png);
+                        var c = bmp.GetPixel(Math.Min(6, bmp.Width - 1), Math.Min(6, bmp.Height - 1));
+                        LogInfo("TrayProbe", string.Format("菜单 {0}x{1} 左上像素 #{2:X2}{3:X2}{4:X2} → {5}",
+                            bmp.Width, bmp.Height, c.R, c.G, c.B, shot));
+                    }
+                }
+                catch (Exception ex) { LogError("TrayProbe", ex); }
+                Shutdown(0);
+                return;
+            }
 
             var wa = Forms.Screen.PrimaryScreen.WorkingArea;
             // 静默：弹到屏幕外，靠 PrintWindow 抓图，用户看不到闪一下
@@ -1152,14 +1195,16 @@ namespace PerfOverlay
 
             sb.AppendLine();
             sb.AppendLine("-- 结论 --");
-            // 这一行和 MonitorHost.FillCpuTemp 是同一条规则（驱动优先、ACPI 兜底）。
+            // 这一行和 MonitorHost.FillCpuTemp 是同一条规则（驱动优先、ACPI 兜底、恒定值自动切源）。
             // 用户报「温度一动不动」时，先看它就知道该查哪条线，不用再猜。
-            sb.AppendLine("  实际取数来源: "
+            sb.AppendLine("  默认取数来源: "
                 + (pawnOk
                     ? "SMN/MSR 寄存器（驱动优先）"
                     : (acpiOk
                         ? "ACPI 热区（兜底；读数恒定则多为固件固定值）"
                         : "无，CT 会显示 --")));
+            sb.AppendLine("  切源规则: 一路连续 4 分钟一字不差、另一路确实会变 → 自动改用会变的那一路");
+            sb.AppendLine("           （切换后保持 60 秒再评估；两路都不变时留在驱动）");
             string state = PerfOverlay.Services.PawnIoInstaller.DescribeState();
             sb.AppendLine("  UI 状态: " + state);
             switch (state)
@@ -1549,6 +1594,7 @@ namespace PerfOverlay
             if (cfg == null) return;
             // 热键注册有系统级副作用，只有值真的变了才去动它
             string oldHotkey = _settings != null ? (_settings.Hotkey ?? "") : "";
+            string oldTheme = _settings != null ? (_settings.Theme ?? "") : "";
             // OffsetX/OffsetY 是浮窗的拖动/贴角状态，面板 Bind 时的克隆里不会更新它；
             // 不带回的话，第二次开关会用 Bind 时的旧偏移覆盖浮窗当前位置，
             // 既让复位判错档位，又会在存盘时把旧偏移写进 settings.json。
@@ -1570,6 +1616,11 @@ namespace PerfOverlay
             _settings = cfg;
             _overlay.ApplySettings(cfg, rowsChanged);
             if (_host != null) _host.ApplySettings(cfg);
+
+            // 主题：面板自己已经换过了（点了就生效），这里补的是面板管不到的托盘菜单
+            // （NotifyIcon 是 WinForms，读不到 WPF 的 DynamicResource）。
+            if (_trayMenu != null && !string.Equals(oldTheme, cfg.Theme ?? "", StringComparison.OrdinalIgnoreCase))
+                ApplyTheme(cfg.Theme);
 
             if (!string.Equals(oldHotkey, cfg.Hotkey ?? "", StringComparison.OrdinalIgnoreCase))
                 ApplyHotkeyFromSettings();
@@ -1750,6 +1801,7 @@ namespace PerfOverlay
                 Visible = _settings.ShowTrayIcon
             };
 
+            var palette = ThemeManager.MenuPalette.Current();
             var menu = new Forms.ContextMenuStrip
             {
                 ShowImageMargin = false,
@@ -1757,9 +1809,9 @@ namespace PerfOverlay
                 // 当前状态改用「动作文案」表达（隐藏浮窗 / 取消开机启动），一眼就能看出点下去会怎样。
                 ShowCheckMargin = false,
                 Font = new Font("Microsoft YaHei UI", 9f),
-                Renderer = new LightMenuRenderer(),
-                BackColor = Color.White,
-                ForeColor = Color.FromArgb(0x18, 0x2A, 0x40),
+                Renderer = new MenuRenderer(palette),
+                BackColor = palette.Back,
+                ForeColor = palette.Text,
                 Padding = new Forms.Padding(4),
                 DropShadowEnabled = true,
                 AutoSize = true
@@ -1834,6 +1886,32 @@ namespace PerfOverlay
         }
 
         /// <summary>
+        /// 切主题：WPF 侧换字典（面板、浮窗右键菜单、气泡一起变），
+        /// WinForms 侧换调色板（托盘菜单是 NotifyIcon 自绘，读不到 WPF 资源）。
+        /// 两端取的是同一份定义：菜单颜色来自 ThemeManager.MenuPalette，而它又读 Dark.xaml/Light.xaml。
+        /// </summary>
+        private void ApplyTheme(string theme)
+        {
+            string effective = ThemeManager.Apply(theme);
+            RefreshTrayTheme();
+            LogInfo("Theme", "switch to " + effective + "（setting=" + (theme ?? "(null)") + "）");
+        }
+
+        private void RefreshTrayTheme()
+        {
+            if (_trayMenu == null) return;
+            try
+            {
+                var p = ThemeManager.MenuPalette.Current();
+                _trayMenu.Renderer = new MenuRenderer(p);
+                _trayMenu.BackColor = p.Back;
+                _trayMenu.ForeColor = p.Text;
+                _trayMenu.Invalidate();
+            }
+            catch (Exception) { }
+        }
+
+        /// <summary>
         /// 托盘图标直接用 exe 自身内嵌的图标，不额外打包 .ico 文件。
         /// owned=true 表示这个 Icon 是本次新建的、用完必须 Dispose；
         /// 回落到 SystemIcons.Application 时那是共享静态实例，绝不能再释放。
@@ -1890,16 +1968,21 @@ namespace PerfOverlay
         }
     }
 
-    /// <summary>托盘菜单配色，跟主界面统一的白蓝。</summary>
-    internal sealed class LightMenuRenderer : Forms.ToolStripProfessionalRenderer
+    /// <summary>
+    /// 托盘菜单配色。两套主题共用这一份渲染器，只换调色板 ——
+    /// 颜色不是写死在这里，而是由 ThemeManager.MenuPalette 从当前主题字典里取，
+    /// 所以「面板深色、菜单浅色」这种不一致不会发生。
+    /// </summary>
+    internal sealed class MenuRenderer : Forms.ToolStripProfessionalRenderer
     {
-        private static readonly Color BorderColor = Color.FromArgb(0xE2, 0xEC, 0xFA);
-        private static readonly Color TextColor = Color.FromArgb(0x18, 0x2A, 0x40);
-        private static readonly Color TextSelected = Color.FromArgb(0x2C, 0x6B, 0xF0);
-        private static readonly Color HoverColor = Color.FromArgb(0xE9, 0xF0, 0xFE);
-        private static readonly Color CheckColor = Color.FromArgb(0x2C, 0x6B, 0xF0);
+        private readonly ThemeManager.MenuPalette _p;
 
-        public LightMenuRenderer() : base(new LightColorTable()) { RoundedEdges = false; }
+        public MenuRenderer(ThemeManager.MenuPalette palette)
+            : base(new MenuColorTable(palette))
+        {
+            _p = palette;
+            RoundedEdges = false;
+        }
 
         // 默认会铺一层灰渐变，还带 3D 边框 —— 这就是"系统味"的来源，全部改成手绘
         protected override void OnRenderToolStripBackground(Forms.ToolStripRenderEventArgs e)
@@ -1910,8 +1993,8 @@ namespace PerfOverlay
             int radius = Math.Max(4, (int)Math.Round(8.0 * e.ToolStrip.DeviceDpi / 96.0));
             using (var path = MenuSkin.RoundedPath(r, radius))
             {
-                using (var b = new SolidBrush(Color.White)) g.FillPath(b, path);
-                using (var p = new Pen(BorderColor)) g.DrawPath(p, path);
+                using (var b = new SolidBrush(_p.Back)) g.FillPath(b, path);
+                using (var p = new Pen(_p.Border)) g.DrawPath(p, path);
             }
         }
 
@@ -1931,15 +2014,15 @@ namespace PerfOverlay
             var r = new Rectangle(2, 1, e.Item.Width - 4, e.Item.Height - 2);
             using (var path = MenuSkin.RoundedPath(r, Math.Max(3, r.Height / 3)))
             {
-                using (var b = new SolidBrush(HoverColor)) g.FillPath(b, path);
+                using (var b = new SolidBrush(_p.Hover)) g.FillPath(b, path);
             }
         }
 
         protected override void OnRenderItemText(Forms.ToolStripItemTextRenderEventArgs e)
         {
             var color = !e.Item.Enabled
-                ? Color.FromArgb(0x9A, 0xAE, 0xC6)
-                : (e.Item.Selected ? TextSelected : TextColor);
+                ? _p.TextDisabled
+                : (e.Item.Selected ? _p.TextSelected : _p.Text);
 
             // ToolStripMenuItem 的 TextAlign 是不生效的 —— 它的专用布局
             // (ToolStripMenuItemInternalLayout) 把文字矩形写死在左侧，为了对齐勾选列。
@@ -1968,7 +2051,7 @@ namespace PerfOverlay
             float cx = r.Left + r.Width / 2f;
             float cy = r.Top + r.Height / 2f;
             float k = r.Width / 16f;
-            using (var pen = new Pen(CheckColor, 1.8f))
+            using (var pen = new Pen(_p.TextSelected, 1.8f))
             {
                 pen.StartCap = Drawing2D.LineCap.Round;
                 pen.EndCap = Drawing2D.LineCap.Round;
@@ -1985,7 +2068,7 @@ namespace PerfOverlay
         {
             var g = e.Graphics;
             int y = e.Item.Height / 2;
-            using (var p = new Pen(Color.FromArgb(0xED, 0xF2, 0xFA)))
+            using (var p = new Pen(_p.Separator))
                 g.DrawLine(p, 10, y, e.Item.Width - 10, y);
         }
     }
@@ -2019,17 +2102,22 @@ namespace PerfOverlay
         }
     }
 
-    internal sealed class LightColorTable : Forms.ProfessionalColorTable
+    /// <summary>托盘菜单的 ProfessionalColorTable 覆写：颜色全部来自调色板。</summary>
+    internal sealed class MenuColorTable : Forms.ProfessionalColorTable
     {
-        public override Color MenuItemSelected { get { return Color.FromArgb(0xE9, 0xF0, 0xFE); } }
-        public override Color MenuItemSelectedGradientBegin { get { return Color.FromArgb(0xE9, 0xF0, 0xFE); } }
-        public override Color MenuItemSelectedGradientEnd { get { return Color.FromArgb(0xE9, 0xF0, 0xFE); } }
-        public override Color MenuItemBorder { get { return Color.FromArgb(0xD6, 0xE4, 0xF8); } }
-        public override Color ToolStripDropDownBackground { get { return Color.White; } }
-        public override Color ImageMarginGradientBegin { get { return Color.White; } }
-        public override Color ImageMarginGradientMiddle { get { return Color.White; } }
-        public override Color ImageMarginGradientEnd { get { return Color.White; } }
-        public override Color SeparatorDark { get { return Color.FromArgb(0xEC, 0xF3, 0xFD); } }
-        public override Color SeparatorLight { get { return Color.White; } }
+        private readonly ThemeManager.MenuPalette _p;
+
+        public MenuColorTable(ThemeManager.MenuPalette palette) { _p = palette; }
+
+        public override Color MenuItemSelected { get { return _p.Hover; } }
+        public override Color MenuItemSelectedGradientBegin { get { return _p.Hover; } }
+        public override Color MenuItemSelectedGradientEnd { get { return _p.Hover; } }
+        public override Color MenuItemBorder { get { return _p.Border; } }
+        public override Color ToolStripDropDownBackground { get { return _p.Back; } }
+        public override Color ImageMarginGradientBegin { get { return _p.Back; } }
+        public override Color ImageMarginGradientMiddle { get { return _p.Back; } }
+        public override Color ImageMarginGradientEnd { get { return _p.Back; } }
+        public override Color SeparatorDark { get { return _p.Separator; } }
+        public override Color SeparatorLight { get { return _p.Back; } }
     }
 }

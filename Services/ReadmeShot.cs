@@ -37,19 +37,34 @@ namespace PerfOverlay.Services
         {
             if (!Directory.Exists(outDir)) Directory.CreateDirectory(outDir);
 
-            using (var overlay = RenderOverlay())
-            using (var panel = RenderPanel())
+            // 配图固定浅色打头：README 的图必须可复现，不能因为生成图的那台机器
+            // 设了深色主题就换一套配色。深色面板另外单独出一张 console-dark.png。
+            string prev = ThemeManager.Effective;
+            ThemeManager.Apply(ThemeManager.Light);
+            try
             {
-                var hero = ComposeHero(panel, overlay);
-                string heroPath = Path.Combine(outDir, "screenshot.png");
-                hero.Save(heroPath, ImageFormat.Png);
-                hero.Dispose();
+                using (var overlay = RenderOverlay())
+                using (var panel = RenderPanel())
+                {
+                    var hero = ComposeHero(panel, overlay);
+                    string heroPath = Path.Combine(outDir, "screenshot.png");
+                    hero.Save(heroPath, ImageFormat.Png);
+                    hero.Dispose();
 
-                // 顺带输出三张单独的图，README 里可以按需引用
-                Save(overlay, Path.Combine(outDir, "overlay-dark.png"), DarkBackdrop);
-                Save(overlay, Path.Combine(outDir, "overlay-light.png"), LightBackdrop);
-                Save(panel, Path.Combine(outDir, "console.png"), CanvasBackdrop);
-                return heroPath;
+                    // 顺带输出几张单独的图，README 里可以按需引用
+                    Save(overlay, Path.Combine(outDir, "overlay-dark.png"), DarkBackdrop);
+                    Save(overlay, Path.Combine(outDir, "overlay-light.png"), LightBackdrop);
+                    Save(panel, Path.Combine(outDir, "console.png"), CanvasBackdrop);
+
+                    using (var darkPanel = RenderPanel(ThemeManager.Dark))
+                        Save(darkPanel, Path.Combine(outDir, "console-dark.png"), DarkBackdrop);
+
+                    return heroPath;
+                }
+            }
+            finally
+            {
+                ThemeManager.Apply(prev);
             }
         }
 
@@ -102,6 +117,25 @@ namespace PerfOverlay.Services
         /// <summary>控制面板：与用户实际打开时完全一样的视觉树（显示项全开，配图才看得出两列布局）。</summary>
         private static Bitmap RenderPanel()
         {
+            return RenderPanel(ThemeManager.Light);
+        }
+
+        private static Bitmap RenderPanel(string theme)
+        {
+            string prev = ThemeManager.Effective;
+            ThemeManager.Apply(theme);
+            try
+            {
+                return RenderPanelCore(theme);
+            }
+            finally
+            {
+                ThemeManager.Apply(prev);
+            }
+        }
+
+        private static Bitmap RenderPanelCore(string theme)
+        {
             // 配图必须可复现、且不带任何本机痕迹：刻意从 new AppSettings() 起，
             // 不读 SettingsStore —— 否则用户的热键（如 Ctrl+F）、开机自启勾选、
             // 字号档位会跟着进图，既不可复现也等于把本机配置贴到公开仓库里。
@@ -121,6 +155,8 @@ namespace PerfOverlay.Services
                 ClickThrough = false,
                 ShowTrayIcon = true,
                 OverlayVisible = true,
+                // 主题分段按钮要跟实际配色一致：深色图里点亮「浅色」会自相矛盾
+                Theme = theme,
                 FirstRunDone = true
             };
 

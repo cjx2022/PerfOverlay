@@ -8,12 +8,13 @@
         ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False"
-        Background="{StaticResource PageBg}"
+        Background="{DynamicResource PageBg}"
+        Foreground="{DynamicResource TextPrimary}"
         FontFamily="{StaticResource UiFont}"
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Ideal">
 
-    <Border BorderBrush="#FFD3E2F7" BorderThickness="1">
+    <Border BorderBrush="{DynamicResource WindowBorder}" BorderThickness="1">
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
@@ -21,7 +22,7 @@
             </Grid.RowDefinitions>
 
             <!-- 标题栏：与主控制面板同高同字重，两扇窗叠在一起时不会错位 -->
-            <Grid Grid.Row="0" Height="40" Background="White" MouseLeftButtonDown="OnTitleBarMouseDown">
+            <Grid Grid.Row="0" Height="40" Background="{DynamicResource TitleBarBg}" MouseLeftButtonDown="OnTitleBarMouseDown">
                 <StackPanel Orientation="Horizontal" Margin="18,0" VerticalAlignment="Center">
                     <TextBlock Text="版本与更新" FontSize="13.5" FontWeight="SemiBold"
                                Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center" />
@@ -36,14 +37,14 @@
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
                             <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="7">
-                                <Path Data="M0,0 L9,9 M9,0 L0,9" Stroke="#FF7E95B3"
+                                <Path Data="M0,0 L9,9 M9,0 L0,9" Stroke="{DynamicResource CloseIcon}"
                                       StrokeThickness="1.5" StrokeStartLineCap="Round"
                                       StrokeEndLineCap="Round"
                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
                             </Border>
                             <ControlTemplate.Triggers>
                                 <Trigger Property="IsMouseOver" Value="True">
-                                    <Setter TargetName="Bd" Property="Background" Value="#FFFDECEC" />
+                                    <Setter TargetName="Bd" Property="Background" Value="{DynamicResource CloseHoverBg}" />
                                 </Trigger>
                             </ControlTemplate.Triggers>
                         </ControlTemplate>
@@ -61,7 +62,7 @@
                            TextWrapping="Wrap" Margin="0,6,0,0" />
 
                 <!-- 状态条：检查结果都落在这里，避免弹对话框打断操作 -->
-                <Border Background="#FFF7FAFF" BorderBrush="#FFE2ECFA" BorderThickness="1"
+                <Border Background="{DynamicResource SoftBox}" BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                         CornerRadius="9" Padding="12,10" Margin="0,14,0,0">
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -70,7 +71,7 @@
                         </Grid.ColumnDefinitions>
 
                         <Ellipse x:Name="DotStatus" Grid.Column="0" Width="8" Height="8"
-                                 Fill="#FFB9C8DA" VerticalAlignment="Top" Margin="0,5,8,0" />
+                                 Fill="{DynamicResource DotIdle}" VerticalAlignment="Top" Margin="0,5,8,0" />
 
                         <TextBlock x:Name="TxtStatus" Grid.Column="1"
                                    Text="正在查询 GitHub 上的最新版本…"
@@ -96,7 +97,7 @@
                 </Grid>
 
                 <TextBlock Text="更新来自 GitHub Releases，本程序不会自动下载或替换文件。"
-                           FontSize="10.5" Foreground="#FF9AAEC6"
+                           FontSize="10.5" Foreground="{DynamicResource TextHint}"
                            TextWrapping="Wrap" Margin="0,12,0,0" />
             </StackPanel>
         </Grid>

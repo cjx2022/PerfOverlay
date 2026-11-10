@@ -42,6 +42,13 @@ namespace PerfOverlay.Services
         [DataMember(Order = 27)] public int SchemaVersion = 1;
 
         // ---- 外观 ----
+        /// <summary>
+        /// 界面主题：light / dark / auto（跟随系统「应用模式」）。
+        /// DataContractJsonSerializer 不走初始化器，老配置读出来是 null，用之前一律判空，
+        /// 判空后按 light 处理（见 ThemeManager.Resolve）—— 升级用户不该突然被换配色。
+        /// </summary>
+        [DataMember(Order = 28)] public string Theme = "light";
+
         [DataMember(Order = 6)] public int RefreshMs = 500;
         [DataMember(Order = 7)] public double Opacity = 1.0;
         [DataMember(Order = 8)] public string SizeMode = "M";     // S / M / L
@@ -138,6 +145,11 @@ namespace PerfOverlay.Services
                 s.ShowGpuTemp = s.ShowTemp;
                 s.SchemaVersion = 1;
             }
+
+            // 0.9.6 起有主题了。老配置里没有这个字段，反序列化得到 null，
+            // 这里补成 light 并落盘，避免「null / "light"」两种写法在不同地方各自判空。
+            if (string.IsNullOrEmpty(s.Theme)) s.Theme = ThemeManager.Light;
+
             return s;
         }
     }

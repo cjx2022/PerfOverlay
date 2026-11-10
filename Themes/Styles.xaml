@@ -1,31 +1,27 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
-    <!-- ============ 浅色白蓝主题 token ============ -->
-    <Color x:Key="PageBgColor">#FFF3F8FE</Color>
-    <Color x:Key="CardBgColor">#FFFFFFFF</Color>
-    <Color x:Key="CardBorderColor">#FFE2ECFA</Color>
-    <Color x:Key="TextPrimaryColor">#FF182A40</Color>
-    <Color x:Key="TextSecondaryColor">#FF7189A6</Color>
-    <Color x:Key="AccentColor">#FF2C6BF0</Color>
-
-    <SolidColorBrush x:Key="PageBg" Color="{StaticResource PageBgColor}" />
-    <SolidColorBrush x:Key="CardBg" Color="{StaticResource CardBgColor}" />
-    <SolidColorBrush x:Key="CardBorder" Color="{StaticResource CardBorderColor}" />
-    <SolidColorBrush x:Key="TextPrimary" Color="{StaticResource TextPrimaryColor}" />
-    <SolidColorBrush x:Key="TextSecondary" Color="{StaticResource TextSecondaryColor}" />
-    <SolidColorBrush x:Key="Accent" Color="{StaticResource AccentColor}" />
-    <SolidColorBrush x:Key="AccentHover" Color="#FF1E56D5" />
-    <SolidColorBrush x:Key="AccentSoft" Color="#FFE9F0FE" />
-    <SolidColorBrush x:Key="TrackBg" Color="#FFD9E6F8" />
+    <!-- ==================================================================
+         样式（与颜色分离）
+         ==================================================================
+         所有颜色一律 DynamicResource —— 换主题时 ThemeManager 把主题字典整份替换，
+         StaticResource 会把旧颜色冻结在已经解析过的元素上，表现为「切了主题一半不跟着变」。
+         同理，任何 Storyboard 的动画目标值都吃不了 DynamicResource，所以状态色一律用
+         Setter（见开关轨道），只把「位移/不透明度」这类纯数值交给动画。
+         ================================================================== -->
 
     <FontFamily x:Key="UiFont">Microsoft YaHei UI, Microsoft YaHei, Segoe UI</FontFamily>
 
     <!-- ============ 开关（CheckBox 重模板） ============ -->
     <Style x:Key="Switch" TargetType="CheckBox">
+        <!-- 必须显式把 Background 设成 Transparent：系统主题样式给 CheckBox 的
+             Background 默认是 **白色**，虽然我们的模板没有绑定它、屏幕上什么都不会画，
+             但「控件背景=白」会骗过一切按控件属性取底色的测量（主题体检就在这里错过一次）。
+             显式置空既符合视觉事实，也让测量结果可信。 -->
+        <Setter Property="Background" Value="Transparent" />
         <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
         <Setter Property="FontSize" Value="13" />
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
         <Setter Property="Template">
@@ -38,9 +34,10 @@
                         </Grid.ColumnDefinitions>
 
                         <Grid Width="40" Height="22" VerticalAlignment="Center">
-                            <Border x:Name="Track" CornerRadius="11" Background="#FFCFDDEF" />
+                            <Border x:Name="Track" CornerRadius="11"
+                                    Background="{DynamicResource SwitchTrackOff}" />
                             <Border x:Name="Knob" Width="16" Height="16" CornerRadius="8"
-                                    Background="White" HorizontalAlignment="Left"
+                                    Background="{DynamicResource SwitchKnob}" HorizontalAlignment="Left"
                                     Margin="3,0,0,0" RenderTransformOrigin="0.5,0.5">
                                 <Border.RenderTransform>
                                     <TranslateTransform X="0" />
@@ -58,12 +55,14 @@
 
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsChecked" Value="True">
+                            <!-- 轨道底色用 Setter + DynamicResource（跟着主题走），
+                                 只有滑块位移走动画。早先是 ColorAnimation 把两种状态写死成
+                                 两个十六进制值 —— 深色主题下取消勾选会动画回一块浅灰蓝，
+                                 与背景撞色。动画的 To 吃不了 DynamicResource，只能这么拆。 -->
+                            <Setter TargetName="Track" Property="Background" Value="{DynamicResource Accent}" />
                             <Trigger.EnterActions>
                                 <BeginStoryboard>
                                     <Storyboard>
-                                        <ColorAnimation Storyboard.TargetName="Track"
-                                                        Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)"
-                                                        To="#FF2C6BF0" Duration="0:0:0.18" />
                                         <DoubleAnimation Storyboard.TargetName="Knob"
                                                          Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.X)"
                                                          To="18" Duration="0:0:0.18">
@@ -77,9 +76,6 @@
                             <Trigger.ExitActions>
                                 <BeginStoryboard>
                                     <Storyboard>
-                                        <ColorAnimation Storyboard.TargetName="Track"
-                                                        Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)"
-                                                        To="#FFCFDDEF" Duration="0:0:0.18" />
                                         <DoubleAnimation Storyboard.TargetName="Knob"
                                                          Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.X)"
                                                          To="0" Duration="0:0:0.18">
@@ -105,7 +101,7 @@
         <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
         <Setter Property="FontSize" Value="13" />
         <Setter Property="Foreground" Value="White" />
-        <Setter Property="Background" Value="{StaticResource Accent}" />
+        <Setter Property="Background" Value="{DynamicResource Accent}" />
         <Setter Property="Padding" Value="18,8" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="Template">
@@ -117,7 +113,7 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentHover}" />
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentHover}" />
                         </Trigger>
                         <Trigger Property="IsPressed" Value="True">
                             <Setter TargetName="Bd" Property="Opacity" Value="0.85" />
@@ -135,7 +131,7 @@
     <Style x:Key="GhostButton" TargetType="Button">
         <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
         <Setter Property="FontSize" Value="13" />
-        <Setter Property="Foreground" Value="{StaticResource Accent}" />
+        <Setter Property="Foreground" Value="{DynamicResource AccentText}" />
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Padding" Value="14,7" />
         <Setter Property="HorizontalContentAlignment" Value="Center" />
@@ -144,13 +140,13 @@
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
                     <Border x:Name="Bd" Background="{TemplateBinding Background}"
-                            BorderBrush="#FFD6E4F8" BorderThickness="1"
+                            BorderBrush="{DynamicResource GhostBorder}" BorderThickness="1"
                             CornerRadius="8" Padding="{TemplateBinding Padding}">
                         <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center" />
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentSoft}" />
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentSoft}" />
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter TargetName="Bd" Property="Opacity" Value="0.4" />
@@ -163,27 +159,29 @@
 
     <!-- ============ 分段选择（RadioButton 重模板） ============ -->
     <Style x:Key="SegButton" TargetType="RadioButton">
+        <Setter Property="Background" Value="Transparent" />
         <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
         <Setter Property="FontSize" Value="12" />
-        <Setter Property="Foreground" Value="{StaticResource TextSecondary}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="Margin" Value="0,0,6,0" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="RadioButton">
-                    <Border x:Name="Bd" Background="#FFF7FAFF" BorderBrush="#FFDCE8F9"
+                    <Border x:Name="Bd" Background="{DynamicResource SegBg}"
+                            BorderBrush="{DynamicResource SegBorder}"
                             BorderThickness="1" CornerRadius="7" Padding="14,6">
                         <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsChecked" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentSoft}" />
-                            <Setter TargetName="Bd" Property="BorderBrush" Value="#FF9DC0F8" />
-                            <Setter Property="Foreground" Value="{StaticResource Accent}" />
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentSoft}" />
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource SegBorderChecked}" />
+                            <Setter Property="Foreground" Value="{DynamicResource AccentText}" />
                             <Setter Property="FontWeight" Value="SemiBold" />
                         </Trigger>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentSoft}" />
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentSoft}" />
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -200,7 +198,7 @@
             <Setter.Value>
                 <ControlTemplate TargetType="ProgressBar">
                     <Grid>
-                        <Border Background="#FFD9E6F8" CornerRadius="1.5" />
+                        <Border Background="{DynamicResource TrackBg}" CornerRadius="1.5" />
                         <Rectangle x:Name="PART_Track" Fill="Transparent" />
                         <Border x:Name="PART_Indicator" HorizontalAlignment="Left"
                                 CornerRadius="1.5" Background="{TemplateBinding Foreground}" />
@@ -217,13 +215,15 @@
             <Setter.Value>
                 <ControlTemplate TargetType="Slider">
                     <Grid VerticalAlignment="Center">
-                        <Border Height="4" CornerRadius="2" Background="#FFD9E6F8" VerticalAlignment="Center" />
+                        <Border Height="4" CornerRadius="2" Background="{DynamicResource TrackBg}"
+                                VerticalAlignment="Center" />
                         <Track x:Name="PART_Track" VerticalAlignment="Center">
                             <Track.DecreaseRepeatButton>
                                 <RepeatButton Command="Slider.DecreaseLarge" Focusable="False" IsTabStop="False">
                                     <RepeatButton.Template>
                                         <ControlTemplate TargetType="RepeatButton">
-                                            <Border Height="4" CornerRadius="2" Background="#FF2C6BF0" VerticalAlignment="Center" />
+                                            <Border Height="4" CornerRadius="2"
+                                                    Background="{DynamicResource Accent}" VerticalAlignment="Center" />
                                         </ControlTemplate>
                                     </RepeatButton.Template>
                                 </RepeatButton>
@@ -242,7 +242,8 @@
                                     <Thumb.Template>
                                         <ControlTemplate TargetType="Thumb">
                                             <Grid>
-                                                <Ellipse Fill="White" Stroke="#FF2C6BF0" StrokeThickness="2" />
+                                                <Ellipse Fill="{DynamicResource SwitchKnob}"
+                                                         Stroke="{DynamicResource Accent}" StrokeThickness="2" />
                                             </Grid>
                                         </ControlTemplate>
                                     </Thumb.Template>
@@ -273,7 +274,8 @@
                                 <Thumb>
                                     <Thumb.Template>
                                         <ControlTemplate TargetType="Thumb">
-                                            <Border Background="#FFC3D6EF" CornerRadius="4" Margin="2,0" />
+                                            <Border Background="{DynamicResource ScrollThumb}"
+                                                    CornerRadius="4" Margin="2,0" />
                                         </ControlTemplate>
                                     </Thumb.Template>
                                 </Thumb>
@@ -287,8 +289,8 @@
 
     <!-- ============ 卡片 ============ -->
     <Style x:Key="Card" TargetType="Border">
-        <Setter Property="Background" Value="{StaticResource CardBg}" />
-        <Setter Property="BorderBrush" Value="{StaticResource CardBorder}" />
+        <Setter Property="Background" Value="{DynamicResource CardBg}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource CardBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="CornerRadius" Value="12" />
         <Setter Property="Padding" Value="16,14" />
@@ -299,21 +301,46 @@
         <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
         <Setter Property="FontSize" Value="12" />
         <Setter Property="FontWeight" Value="SemiBold" />
-        <Setter Property="Foreground" Value="{StaticResource TextSecondary}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
         <Setter Property="Margin" Value="2,0,0,8" />
     </Style>
 
     <Style x:Key="Hint" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
         <Setter Property="FontSize" Value="11" />
-        <Setter Property="Foreground" Value="#FF9AAEC6" />
+        <Setter Property="Foreground" Value="{DynamicResource TextHint}" />
         <Setter Property="TextWrapping" Value="Wrap" />
         <Setter Property="Margin" Value="52,3,0,0" />
     </Style>
 
+    <!-- ============ 气泡提示 ============ -->
+    <!-- 系统默认 ToolTip 是浅灰底黑字，深色主题下会闪一块白，所以整套重做。
+         这是隐式样式：所有没显式指定 Style 的 ToolTip 都跟着主题走。 -->
+    <Style TargetType="ToolTip">
+        <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="HasDropShadow" Value="False" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToolTip">
+                    <Border Background="{DynamicResource MenuBg}" CornerRadius="7"
+                            BorderBrush="{DynamicResource MenuBorder}" BorderThickness="1"
+                            Padding="10,7" Margin="6">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="14" ShadowDepth="2" Direction="270"
+                                              Opacity="0.22" Color="#FF000000" />
+                        </Border.Effect>
+                        <ContentPresenter />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- ============ 浮窗右键菜单 ============ -->
-    <!-- ContextMenu 默认是系统灰底，和整体白蓝风格不搭，这里整套重做：
-         白色圆角卡 + 柔和投影 + 悬浮行浅蓝底 + 细分割线。 -->
+    <!-- ContextMenu 默认是系统灰底，和整体风格不搭，这里整套重做：
+         圆角卡 + 柔和投影 + 悬浮行浅色底 + 细分割线。颜色全部走主题 token。 -->
     <Style x:Key="FloatingMenu" TargetType="ContextMenu">
         <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
         <Setter Property="FontSize" Value="12.5" />
@@ -326,8 +353,8 @@
                 <ControlTemplate TargetType="ContextMenu">
                     <!-- 外层留白给投影，否则阴影会被裁掉 -->
                     <Grid Margin="9">
-                        <Border Background="White" CornerRadius="10"
-                                BorderBrush="#FFE2ECFA" BorderThickness="1" Padding="6">
+                        <Border Background="{DynamicResource MenuBg}" CornerRadius="10"
+                                BorderBrush="{DynamicResource MenuBorder}" BorderThickness="1" Padding="6">
                             <Border.Effect>
                                 <DropShadowEffect BlurRadius="18" ShadowDepth="3" Direction="270"
                                                   Opacity="0.18" Color="#FF26456B" />
@@ -341,7 +368,7 @@
     </Style>
 
     <Style x:Key="FloatingMenuItem" TargetType="MenuItem">
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="Padding" Value="12,7" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="Template">
@@ -356,8 +383,8 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsHighlighted" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentSoft}" />
-                            <Setter Property="Foreground" Value="{StaticResource Accent}" />
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource MenuHover}" />
+                            <Setter Property="Foreground" Value="{DynamicResource AccentText}" />
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter Property="Opacity" Value="0.45" />
@@ -372,7 +399,7 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Separator">
-                    <Border Height="1" Background="#FFEDF2FA" Margin="10,5" />
+                    <Border Height="1" Background="{DynamicResource MenuSeparator}" Margin="10,5" />
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
