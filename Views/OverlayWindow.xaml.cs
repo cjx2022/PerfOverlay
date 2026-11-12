@@ -154,6 +154,8 @@ namespace PerfOverlay.Views
             if (_settings.ShowFps) items.Add(new[] { "fps", "FPS", "888" });
             // 标签文案：low(1%) 比裸 LOW 更说清口径
             if (_settings.ShowLowFps) items.Add(new[] { "low", "low(1%)", "888" });
+            // LAT = 显示延迟（毫秒）。默认关闭，勾了才占位置。
+            if (_settings.ShowDisplayLatency) items.Add(new[] { "lat", "LAT", "888" });
             if (_settings.ShowCpu) items.Add(new[] { "cpu", "CPU", "100%" });
             if (_settings.ShowMemory) items.Add(new[] { "mem", "MEM", "100%" });
             if (_settings.ShowVram) items.Add(new[] { "vram", "VRAM", "100%" });
@@ -371,6 +373,14 @@ namespace PerfOverlay.Views
                 Set("low", s.FpsOk ? ((int)Math.Round(s.LowFps)).ToString() : null,
                     s.FpsOk ? "最近 10 秒最差 1% 帧" : s.FpsMessage);
 
+            if (_settings.ShowDisplayLatency)
+            {
+                // 值取中位数、不带单位（跟 FPS 一样裸数字），毫秒数写进悬停提示。
+                // 拿不到就显示 -- 而不是 0：0 会被读成「零延迟」。
+                Set("lat", s.LatencyOk ? FormatLatency(s.LatencyMs) : null,
+                    s.LatencyDetail, "--");
+            }
+
             if (_settings.ShowVram)
             {
                 if (s.VramOk)
@@ -410,6 +420,15 @@ namespace PerfOverlay.Views
         private static string FormatTemp(double celsius)
         {
             return ((int)Math.Round(celsius)).ToString() + "°";
+        }
+
+        /// <summary>
+        /// 显示延迟：10ms 以下保留一位小数。这个区间里 8.4 与 9.1 的差别是真的
+        /// （差一帧 vs 差半帧），取整会把它们显示成同一个数；10ms 以上一位小数没有意义。
+        /// </summary>
+        private static string FormatLatency(double ms)
+        {
+            return ms < 10 ? ms.ToString("0.0") : ((int)Math.Round(ms)).ToString();
         }
 
         private static string FormatPercent(double v)

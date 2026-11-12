@@ -139,6 +139,32 @@ namespace PerfOverlay.Services
             return false;
         }
 
+        /// <summary>
+        /// 任务栏（系统 UI）是否深色 —— 托盘图标跟这一个，不跟 AppsUseLightTheme。
+        ///
+        /// 这两项是注册表里**两个独立的值**，用户完全可以把窗口设成浅色、任务栏设成深色：
+        ///   AppsUseLightTheme   → 窗口、控件、我们的面板（见 SystemPrefersDark）
+        ///   SystemUsesLightTheme → 任务栏、开始菜单、系统弹窗（托盘图标就活在这块背景上）
+        /// 图标要的是「在我背后那块底色上看得清」，所以只认后者。
+        /// 读不到按浅色处理：宁可给浅色版，也不要让图标在浅色任务栏上糊成一块。
+        /// </summary>
+        public static bool SystemTrayPrefersDark()
+        {
+            try
+            {
+                using (var k = Registry.CurrentUser.OpenSubKey(
+                           @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
+                {
+                    if (k == null) return false;
+                    object v = k.GetValue("SystemUsesLightTheme");
+                    if (v == null) return false;
+                    return Convert.ToInt32(v) == 0;
+                }
+            }
+            catch (Exception) { }
+            return false;
+        }
+
         // ==================================================================
         // 给 WinForms 托盘菜单取色
         //

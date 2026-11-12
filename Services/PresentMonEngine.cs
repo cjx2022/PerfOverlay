@@ -16,6 +16,15 @@ namespace PerfOverlay.Services
         public int FrameCount;      // 统计窗口内的帧数
         public string TargetProcess;
         public string Message;
+
+        // ---- 显示延迟：Present 调用 → 该帧被扫到屏幕上（毫秒）----
+        // 不是「帧时间」，也不是「输入延迟」。取值来自 PresentMon 的 msUntilDisplayed，
+        // 只有渲染路径允许追踪显示环节时才有数（见 HandleLine 里的说明）。
+        public bool LatencyOk;
+        public double LatencyP50Ms;
+        public double LatencyP95Ms;
+        public int LatencySamples;
+        public string LatencyMessage;
     }
 
     /// <summary>
@@ -53,6 +62,9 @@ namespace PerfOverlay.Services
         private const int MinFramesForLow = 100;        // 少于 100 帧谈 1% 没有意义
         private const double Percentile = 0.01;         // 1%
         private const double StaleSeconds = 2.5;        // 超过这个时间没新帧就判为停止提交
+        // 显示延迟用「够不够说明问题」当门槛：60fps 下 10 秒 600 帧，20 个有效样本
+        // 已经能给出稳定的中位数；再少就说明这段画面根本追踪不到显示环节。
+        private const int MinLatencySamples = 20;
 
         private readonly object _gate = new object();
         private readonly string _exePath;
@@ -121,6 +133,33 @@ namespace PerfOverlay.Services
         private int _idxBetween = -1;
         private int _idxTime = -1;
         private int _idxSwapChain = -1;
+        private int _idxUntilDisplayed = -1;
+
+        // 是否采集显示延迟。默认关：v1_metrics 的 CSV 里这列一直都在，
+        // 不采的时候连切列都不做（每帧少一次 Substring），也不占内存。
+        private volatile bool _captureLatency;
+        public bool CaptureLatency
+        {
+            get { return _captureLatency; }
+            set
+            {
+                if (_captureLatency == value) return;
+                _captureLatency = value;
+                if (!value)
+                {
+                    // 关掉时把已攒的样本清掉，否则下次打开会带着上次的旧数据出数
+                    lock (_gate)
+                    {
+                        foreach (var perChain in _queues.Values)
+                            foreach (var q in perChain.Values) q.ClearDelay();
+                    }
+                }
+            }
+        }
+
+        // 求分位数时的临时缓冲：复用一块，避免每 500ms 在 GC 上扔一个大数组。
+        // 只在 _gate 内使用，所以不需要额外加锁。
+        private readonly List<double> _delayScratch = new List<double>(4096);
 
         private string _lastError = "";
 
@@ -193,10 +232,18 @@ namespace PerfOverlay.Services
         /// <summary>当前目标 PID（诊断用）。</summary>
         public int TargetPid { get { lock (_gate) { return _targetPid; } } }
 
-        public PresentMonEngine(string exePath)
+        public PresentMonEngine(string exePath, bool excludeSelf = true)
         {
             _exePath = exePath;
+            ExcludeSelf = excludeSelf;
         }
+
+        /// <summary>
+        /// 是否把本进程排除在采集之外。默认开 —— 浮窗自己也在 Present，
+        /// 不排除就会在「前台是别的程序」时把自己那几帧混进来。
+        /// 只有 --latency-test 要采自己的动画窗口时才关掉。
+        /// </summary>
+        public bool ExcludeSelf { get; set; }
 
         /// <summary>前台进程变化时调用。只统计该进程的 present，避免把浮窗自己也算进去。</summary>
         public void SetTarget(int pid, string name)
@@ -248,7 +295,7 @@ namespace PerfOverlay.Services
                     // 2.6 以下没有这个开关，加了会直接启动失败，所以按版本探测后再加。
                     Arguments = "--output_stdout --no_console_stats --v1_metrics "
                               + "--session_name " + _sessionName
-                              + " --exclude " + SelfExeName
+                              + (ExcludeSelf ? " --exclude " + SelfExeName : "")
                               + CircularBufferArg(),
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
@@ -427,6 +474,7 @@ namespace PerfOverlay.Services
             int tStart = -1, tLen = 0;
             int chStart = -1, chLen = 0;
             int appStart = -1, appLen = 0;
+            int dlStart = -1, dlLen = 0;
 
             int col = 0, start = 0, total = line.Length;
             for (int i = 0; i <= total; i++)
@@ -438,6 +486,7 @@ namespace PerfOverlay.Services
                 else if (col == _idxTime) { tStart = start; tLen = i - start; }
                 else if (col == _idxSwapChain) { chStart = start; chLen = i - start; }
                 else if (col == _idxApp) { appStart = start; appLen = i - start; }
+                else if (_captureLatency && col == _idxUntilDisplayed) { dlStart = start; dlLen = i - start; }
 
                 col++;
                 start = i + 1;
@@ -475,6 +524,14 @@ namespace PerfOverlay.Services
             ulong chain = 0;
             if (chLen > 0) TryParseHex(line, chStart, chLen, out chain);
 
+            // 显示延迟：msUntilDisplayed。空/0 表示这一帧没被追踪到显示环节，
+            // 不是「延迟为 0」—— 独立翻转、覆盖层、Electron 这类路径整段都是 0，
+            // 所以这里保留 0 作为「无样本」占位，由统计端过滤，绝不当成有效值。
+            double delay = 0;
+            if (dlLen > 0)
+                double.TryParse(line.Substring(dlStart, dlLen), NumberStyles.Float, CultureInfo.InvariantCulture, out delay);
+            if (delay < 0 || delay > 10000) delay = 0;   // 明显异常的脏值直接丢
+
             lock (_gate)
             {
                 _lastSeenPid = pid;
@@ -500,7 +557,7 @@ namespace PerfOverlay.Services
                     q = new FrameQueue();
                     perChain[chain] = q;
                 }
-                q.Push(t, ms);
+                q.Push(t, ms, delay);
             }
         }
 
@@ -573,6 +630,9 @@ namespace PerfOverlay.Services
                 _idxBetween = IndexOf(cols, "msBetweenPresents");
                 _idxTime = IndexOf(cols, "TimeInSeconds");
                 _idxSwapChain = IndexOf(cols, "SwapChainAddress");
+                // 显示延迟列。v1_metrics（PresentMon 1.x 口径）里就是这个名字；
+                // 换 --v2_metrics 的话叫 DisplayLatency，届时这里补一条即可。
+                _idxUntilDisplayed = IndexOf(cols, "msUntilDisplayed");
             }
         }
 
@@ -596,13 +656,30 @@ namespace PerfOverlay.Services
         /// <summary>进程级单调秒表，替代会回绕的 Environment.TickCount。</summary>
         private static readonly Stopwatch Clock = Stopwatch.StartNew();
 
+        /// <summary>取已排序样本的 p 分位（线性插值）。p 用 0.5 / 0.95 这种小数。</summary>
+        private static double PercentileOf(List<double> sorted, double p)
+        {
+            if (sorted.Count == 0) return 0;
+            if (sorted.Count == 1) return sorted[0];
+            double pos = (sorted.Count - 1) * p;
+            int lo = (int)Math.Floor(pos);
+            int hi = (int)Math.Ceiling(pos);
+            if (lo < 0) lo = 0;
+            if (hi >= sorted.Count) hi = sorted.Count - 1;
+            if (lo == hi) return sorted[lo];
+            double frac = pos - lo;
+            return sorted[lo] + (sorted[hi] - sorted[lo]) * frac;
+        }
+
         // ------------------------------------------------------------------
         // 统计
         // ------------------------------------------------------------------
 
         public FrameSnapshot Snapshot()
         {
-            var snap = new FrameSnapshot { Message = "" };
+            // 两个 string 字段都必须给初值：struct 的默认值是 null，
+            // 上层到处在写 `.Length > 0`，漏一个就是空引用（本机实测崩过）。
+            var snap = new FrameSnapshot { Message = "", LatencyMessage = "" };
 
             lock (_gate)
             {
@@ -676,6 +753,39 @@ namespace PerfOverlay.Services
                     }
                 }
 
+                // ---- 显示延迟：窗口内有效样本的 P50 / P95 ----
+                // 用中位数而不是平均值：延迟分布是长尾的（一次卡顿能甩出几百毫秒），
+                // 平均值会被单帧拉飞，中位数才代表「平常看到多少」。
+                if (_captureLatency)
+                {
+                    if (_idxUntilDisplayed < 0)
+                    {
+                        snap.LatencyMessage = "采集器未提供延迟列";
+                    }
+                    else
+                    {
+                        _delayScratch.Clear();
+                        var ds = q.DelayMs;
+                        for (int i = 0; i < ds.Count; i++)
+                            if (ds[i] > 0) _delayScratch.Add(ds[i]);
+
+                        snap.LatencySamples = _delayScratch.Count;
+                        if (_delayScratch.Count >= MinLatencySamples)
+                        {
+                            _delayScratch.Sort();
+                            snap.LatencyP50Ms = PercentileOf(_delayScratch, 0.50);
+                            snap.LatencyP95Ms = PercentileOf(_delayScratch, 0.95);
+                            snap.LatencyOk = true;
+                        }
+                        else
+                        {
+                            snap.LatencyMessage = _delayScratch.Count == 0
+                                ? "这段画面追踪不到显示环节"
+                                : "采样中";
+                        }
+                    }
+                }
+
                 snap.FrameCount = count;
                 snap.TargetProcess = _targetName;
                 return snap;
@@ -690,8 +800,7 @@ namespace PerfOverlay.Services
         ///      同名的 GPU 进程，PID 完全不同。按 PID 精确匹配会让这些应用永远拿不到帧。
         /// 多链时只取记录数最多的一条，避免帧生成/覆盖层把帧数算两遍。
         /// </summary>
-        private FrameQueue PickBestChain()
-        {
+        private FrameQueue PickBestChain()        {
             // 1) PID 精确命中
             Dictionary<ulong, FrameQueue> perChain;
             if (_targetPid > 0 && _queues.TryGetValue(_targetPid, out perChain))
@@ -859,6 +968,8 @@ namespace PerfOverlay.Services
             public readonly List<KeyValuePair<double, double>> Times
                 = new List<KeyValuePair<double, double>>(2048);
             public readonly List<double> FrameMs = new List<double>(2048);
+            /// <summary>与 FrameMs 一一对应的显示延迟；0 表示这一帧没有有效值。</summary>
+            public readonly List<double> DelayMs = new List<double>(2048);
             private const int MaxPoints = 3000;   // ≈ 300fps × 10s
 
             // 最后见过的帧时间戳，与「是否入队」解耦：
@@ -874,7 +985,7 @@ namespace PerfOverlay.Services
             }
 
             /// <summary>ms 为 0（CSV 未给或首帧）时，用与上一帧的时间差补出来。</summary>
-            public void Push(double t, double ms)
+            public void Push(double t, double ms, double delay)
             {
                 if (ms <= 0 && _lastSeenT > 0)
                 {
@@ -887,12 +998,14 @@ namespace PerfOverlay.Services
 
                 Times.Add(new KeyValuePair<double, double>(t, ms));
                 FrameMs.Add(ms);
+                DelayMs.Add(delay);
 
                 if (Times.Count > MaxPoints)
                 {
                     int drop = Times.Count - MaxPoints;
                     Times.RemoveRange(0, drop);
                     FrameMs.RemoveRange(0, drop);
+                    DelayMs.RemoveRange(0, drop);
                 }
             }
 
@@ -904,7 +1017,15 @@ namespace PerfOverlay.Services
                 {
                     Times.RemoveRange(0, drop);
                     if (drop <= FrameMs.Count) FrameMs.RemoveRange(0, drop);
+                    if (drop <= DelayMs.Count) DelayMs.RemoveRange(0, drop);
                 }
+            }
+
+            /// <summary>清掉延迟样本（关掉这个指标时用），帧数统计不受影响。</summary>
+            public void ClearDelay()
+            {
+                DelayMs.Clear();
+                for (int i = 0; i < FrameMs.Count; i++) DelayMs.Add(0);
             }
         }
     }

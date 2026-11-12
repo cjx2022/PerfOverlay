@@ -45,6 +45,9 @@ namespace PerfOverlay.Services
                 string name = Path.GetFileName(f);
                 double expFps = -1, expLow = -1;
                 int expFrames = -1;
+                // 显示延迟：lat=中位数 p95=95 分位 samples=有效样本数
+                double expLat = -1, expP95 = -1;
+                int expSamples = -1;
                 string desc = "";
 
                 var lines = File.ReadAllLines(f, Encoding.UTF8);
@@ -58,8 +61,12 @@ namespace PerfOverlay.Services
                     {
                         ParseExpect(ln, "fps", ref expFps);
                         ParseExpect(ln, "low", ref expLow);
+                        ParseExpect(ln, "lat", ref expLat);
+                        ParseExpect(ln, "p95", ref expP95);
                         int fr;
                         if (TryGetInt(ln, "frames", out fr)) expFrames = fr;
+                        int sc;
+                        if (TryGetInt(ln, "samples", out sc)) expSamples = sc;
                     }
                     else if (ln.StartsWith("# desc", StringComparison.OrdinalIgnoreCase))
                     {
@@ -68,6 +75,9 @@ namespace PerfOverlay.Services
                 }
 
                 var engine = new PresentMonEngine("__none__");
+                // 回放一律开延迟解析：CSV 里有没有这一列由文件决定，
+                // 没有就是「未提供」，正好把两种情况都覆盖到。
+                engine.CaptureLatency = true;
                 for (int i = start; i < lines.Length; i++)
                 {
                     if (lines[i].Length == 0) continue;
@@ -82,6 +92,9 @@ namespace PerfOverlay.Services
                 sb.AppendLine(string.Format("   数据: 帧数={0}  available={1}  msg={2}",
                     snap.FrameCount, snap.Available, snap.Message.Length > 0 ? snap.Message : "-"));
                 sb.AppendLine(string.Format("   结果: FPS={0:0.00}  LOW={1:0.00}", snap.Fps, snap.LowFps));
+                sb.AppendLine(string.Format("   延迟: 样本={0}  P50={1:0.00}  P95={2:0.00}  {3}",
+                    snap.LatencySamples, snap.LatencyP50Ms, snap.LatencyP95Ms,
+                    snap.LatencyOk ? "有效" : (snap.LatencyMessage.Length > 0 ? snap.LatencyMessage : "-")));
 
                 bool okAll = true;
                 if (expFrames > 0)
@@ -101,6 +114,30 @@ namespace PerfOverlay.Services
                     bool ok = Near(snap.LowFps, expLow);
                     if (!ok) okAll = false;
                     sb.AppendLine(string.Format("   [{0}] LOW  实际={1:0.00} 期望={2:0.00}", ok ? "通过" : "失败", snap.LowFps, expLow));
+                }
+                if (expSamples >= 0)
+                {
+                    // 样本数为 0 时同时断言「不能判为有效」：全 0 的意思是没有数据，
+                    // 不是「零延迟」。这条以前最容易写错成显示 0ms。
+                    bool countOk = snap.LatencySamples == expSamples;
+                    bool stateOk = expSamples > 0 ? snap.LatencyOk : !snap.LatencyOk;
+                    bool ok = countOk && stateOk;
+                    if (!ok) okAll = false;
+                    sb.AppendLine(string.Format("   [{0}] 延迟样本 实际={1} 期望={2}  有效性={3}",
+                        ok ? "通过" : "失败", snap.LatencySamples, expSamples,
+                        snap.LatencyOk ? "有效" : "无数据"));
+                }
+                if (expLat >= 0)
+                {
+                    bool ok = Near(snap.LatencyP50Ms, expLat);
+                    if (!ok) okAll = false;
+                    sb.AppendLine(string.Format("   [{0}] 延迟 P50 实际={1:0.00} 期望={2:0.00}", ok ? "通过" : "失败", snap.LatencyP50Ms, expLat));
+                }
+                if (expP95 >= 0)
+                {
+                    bool ok = Near(snap.LatencyP95Ms, expP95);
+                    if (!ok) okAll = false;
+                    sb.AppendLine(string.Format("   [{0}] 延迟 P95 实际={1:0.00} 期望={2:0.00}", ok ? "通过" : "失败", snap.LatencyP95Ms, expP95));
                 }
 
                 if (okAll) pass++; else fail++;

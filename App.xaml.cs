@@ -27,6 +27,13 @@ namespace PerfOverlay
         private Forms.ToolStripMenuItem _miStartup;
         private Icon _trayIcon;
         private bool _trayIconOwned;
+        // 浅色 / 深色两套图标各加载一次、常驻到退出，切换时只换引用。
+        // 不要每次切都 new + Dispose：NotifyIcon 换图标会重新往任务栏投一次，
+        // 频繁新建句柄容易留下一堆没人释放的 HICON。
+        private Icon _trayIconLight;
+        private Icon _trayIconDark;
+        // 上一次实际用的那套（true = 深色），用来避免同一状态下重复赋值
+        private bool _trayIconDarkActive;
 
         private DispatcherTimer _saveTimer;
         private DispatcherTimer _hideTrimTimer;
@@ -266,7 +273,8 @@ namespace PerfOverlay
             // CPU / 内存 / 显存照常工作，只有 FPS 显示 N/A。
             bool uiProbe = HasArg(e.Args, "--open-settings") || HasArg(e.Args, "--open-menu")
                            || HasArg(e.Args, "--pawnio-status") || HasArg(e.Args, "--pawnio-install")
-                           || HasArg(e.Args, "--theme-probe") || HasArg(e.Args, "--tray-menu");
+                           || HasArg(e.Args, "--theme-probe") || HasArg(e.Args, "--tray-menu")
+                           || HasArg(e.Args, "--tray-icon-test");
             if (!PrivilegeHelper.IsElevated
                 && !uiProbe
                 && !HasArg(e.Args, "--noelevate")
@@ -290,6 +298,7 @@ namespace PerfOverlay
                                   + (HasArg(e.Args, "--mem") ? " --mem" : "")
                                   + (HasArg(e.Args, "--mem-hide") ? " --mem-hide" : "")
                                   + ((HasArg(e.Args, "--temp-probe") || HasArg(e.Args, "--lhm-probe")) ? " --temp-probe" : "")
+                                  + (HasArg(e.Args, "--latency-test") ? " --latency-test " + (ArgValue(e.Args, "--latency-test") ?? "") : "")
                                   + (HasArg(e.Args, "--sw") ? " --sw" : "");
                 string elevErr = PrivilegeHelper.RestartElevated(elevArgs);
                 if (elevErr == null)
@@ -376,6 +385,25 @@ namespace PerfOverlay
                 return;
             }
 
+            // ---- 托盘图标探针：两套图标都能加载、都含全尺寸、切换真的换了引用 ----
+            if (HasArg(e.Args, "--tray-icon-test"))
+            {
+                Shutdown(RunTrayIconProbe());
+                return;
+            }
+
+            // ---- 显示延迟自检：自建一个持续出帧的窗口当靶子，量 msUntilDisplayed ----
+            // 放在提权逻辑之后（不像别的探针那样提前 return）：读 ETW 必须管理员，
+            // 提前返回就永远轮不到提权那一跳。
+            if (HasArg(e.Args, "--latency-test"))
+            {
+                int secs = 12;
+                string sv = ArgValue(e.Args, "--latency-test");
+                if (!string.IsNullOrEmpty(sv)) { if (!int.TryParse(sv, out secs)) secs = 12; }
+                Shutdown(Services.LatencyProbe.Run(secs));
+                return;
+            }
+
             _host = new MonitorHost(MonitorHost.PresentMonPath());
             _host.Diagnostic = _diagnostic;
             _host.Updated += OnMetricsUpdated;
@@ -405,6 +433,7 @@ namespace PerfOverlay
             _saveTimer.Tick += (s, a) => { _saveTimer.Stop(); SettingsStore.Save(_settings); };
 
             InitTray();
+            HookSystemTheme();
             InitHotkey();
             _host.Start(_settings);
 
@@ -528,6 +557,145 @@ namespace PerfOverlay
                 Shutdown(0);
             };
             timer.Start();
+        }
+
+        /// <summary>
+        /// 托盘图标自检。四条断言，缺一条这个「跟随」就只是看起来跟了：
+        ///   1) 两套 ico 都能从嵌入资源读出来（打包时漏了会静默回落成 exe 图标）；
+        ///   2) 两套都含 16/24/32/48/64/128/256 七档 —— 少一档，对应 DPI 下就是糊的；
+        ///   3) 两版不是同一张图（真画了深浅两版，不是复制一份）；
+        ///   4) 切换函数真的把 NotifyIcon.Icon 换成了目标那套。
+        /// </summary>
+        private int RunTrayIconProbe()
+        {
+            int fails = 0;
+            var sb = new StringBuilder();
+            sb.AppendLine("PerfOverlay tray icon probe");
+            sb.AppendLine();
+
+            byte[] lightBytes = null, darkBytes = null;
+            try
+            {
+                var asm = System.Reflection.Assembly.GetExecutingAssembly();
+                lightBytes = ReadEmbedded(asm, "PerfOverlay.tray-light.ico");
+                darkBytes = ReadEmbedded(asm, "PerfOverlay.tray-dark.ico");
+            }
+            catch (Exception ex) { sb.AppendLine("读资源异常: " + ex.Message); }
+
+            sb.AppendLine(string.Format("   浅色 ico: {0} B", lightBytes == null ? 0 : lightBytes.Length));
+            sb.AppendLine(string.Format("   深色 ico: {0} B", darkBytes == null ? 0 : darkBytes.Length));
+            if (lightBytes == null || darkBytes == null) { sb.AppendLine("   ✗ 嵌入资源缺失"); fails++; }
+
+            int[] want = { 16, 24, 32, 48, 64, 128, 256 };
+            foreach (var pair in new[] { new[] { "浅色", "0" }, new[] { "深色", "1" } })
+            {
+                byte[] bytes = pair[1] == "0" ? lightBytes : darkBytes;
+                if (bytes == null) continue;
+                var got = IcoSizes(bytes);
+                var missing = new System.Collections.Generic.List<int>();
+                foreach (int w in want) if (!got.Contains(w)) missing.Add(w);
+                sb.AppendLine(string.Format("   {0} 尺寸: {1} {2}", pair[0],
+                    string.Join("/", got.ConvertAll(x => x.ToString()).ToArray()),
+                    missing.Count == 0 ? "OK" : "✗ 缺 " + string.Join("/", missing.ConvertAll(x => x.ToString()).ToArray())));
+                if (missing.Count > 0) fails++;
+            }
+
+            // 两版像素差异：同尺寸下逐点比较，差得太少说明是同一张图
+            LoadTrayIcons();
+            if (_trayIconLight != null && _trayIconDark != null)
+            {
+                try
+                {
+                    using (var a = _trayIconLight.ToBitmap())
+                    using (var b = _trayIconDark.ToBitmap())
+                    {
+                        if (a.Width != b.Width || a.Height != b.Height)
+                        {
+                            sb.AppendLine(string.Format("   ✗ 两版尺寸不一致 {0}x{1} vs {2}x{3}",
+                                a.Width, a.Height, b.Width, b.Height));
+                            fails++;
+                        }
+                        else
+                        {
+                            int diff = 0, totalPx = a.Width * a.Height;
+                            for (int y = 0; y < a.Height; y++)
+                                for (int x = 0; x < a.Width; x++)
+                                    if (a.GetPixel(x, y) != b.GetPixel(x, y)) diff++;
+                            double pct = totalPx > 0 ? diff * 100.0 / totalPx : 0;
+                            sb.AppendLine(string.Format("   两版差异像素: {0}/{1}（{2:0.0}%）{3}",
+                                diff, totalPx, pct, pct >= 10 ? "OK" : "✗ 几乎一样"));
+                            if (pct < 10) fails++;
+                        }
+                    }
+                }
+                catch (Exception ex) { sb.AppendLine("   像素比较异常: " + ex.Message); fails++; }
+            }
+            else { sb.AppendLine("   ✗ 图标未加载"); fails++; }
+
+            // 切换：把状态缓存设成相反值，逼 RefreshTrayIcon 真的算一次
+            try
+            {
+                _tray = new Forms.NotifyIcon { Icon = _trayIconLight, Visible = false };
+                bool wantDark = ThemeManager.SystemTrayPrefersDark();
+                _trayIconDarkActive = !wantDark;
+                RefreshTrayIcon();
+                bool hit = object.ReferenceEquals(_tray.Icon, wantDark ? _trayIconDark : _trayIconLight);
+                sb.AppendLine(string.Format("   系统任务栏: {0} → 期望{1}版 {2}",
+                    wantDark ? "深色" : "浅色", wantDark ? "深" : "浅", hit ? "OK" : "✗"));
+                if (!hit) fails++;
+
+                // 反向：状态位记「已经是目标版」，但实际引用是另一套。
+                // 只比状态位的实现会直接 return、留在错的那套上，所以这一步必须过。
+                _trayIconDarkActive = wantDark;
+                _tray.Icon = wantDark ? _trayIconLight : _trayIconDark;
+                RefreshTrayIcon();
+                bool back = object.ReferenceEquals(_tray.Icon, wantDark ? _trayIconDark : _trayIconLight);
+                sb.AppendLine(string.Format("   状态位与实际引用不同步时自愈 {0}", back ? "OK" : "✗"));
+                if (!back) fails++;
+
+                _tray.Visible = false;
+                _tray.Dispose();
+                _tray = null;
+            }
+            catch (Exception ex) { sb.AppendLine("切换异常: " + ex.Message); fails++; }
+
+            sb.AppendLine();
+            sb.AppendLine(fails == 0 ? "RESULT: OK" : "RESULT: FAIL (" + fails + ")");
+            try { File.WriteAllText(Path.Combine(Path.GetTempPath(), "perfoverlay-tray-icon.txt"), sb.ToString(), Encoding.UTF8); }
+            catch (Exception) { }
+            Console.WriteLine(sb.ToString());
+            return fails == 0 ? 0 : 1;
+        }
+
+        private static byte[] ReadEmbedded(System.Reflection.Assembly asm, string name)
+        {
+            using (var st = asm.GetManifestResourceStream(name))
+            {
+                if (st == null) return null;
+                var buf = new byte[st.Length];
+                int read = 0;
+                while (read < buf.Length)
+                {
+                    int n = st.Read(buf, read, buf.Length - read);
+                    if (n <= 0) break;
+                    read += n;
+                }
+                return buf;
+            }
+        }
+
+        /// <summary>读 ICO 头，列出里面有哪些尺寸（0 表示 256）。</summary>
+        private static System.Collections.Generic.List<int> IcoSizes(byte[] d)
+        {
+            var list = new System.Collections.Generic.List<int>();
+            if (d == null || d.Length < 6) return list;
+            int n = BitConverter.ToUInt16(d, 4);
+            for (int i = 0; i < n && 6 + i * 16 + 16 <= d.Length; i++)
+            {
+                int w = d[6 + i * 16];
+                list.Add(w == 0 ? 256 : w);
+            }
+            return list;
         }
 
         /// <summary>
@@ -727,9 +895,10 @@ namespace PerfOverlay
 
             bool colA = true, colB = true, rowsTied = true, textFits = true;
             var tight = new StringBuilder();
-            // 拆出 CT/GT 之后是 9 项：左列 4 项、右列 5 项。行对齐只比左列有的那 4 行，
-            // 右列多出来的第 5 项单独校验它是否仍在同一竖直线上。
-            const int leftCol = 4;
+            // 0.9.7 加了「显示延迟」之后是 10 项：左右各 5 项，两列一一对应。
+            // 早先是 9 项（左 4 右 5），左列多一项后这个下标必须跟着改 ——
+            // 写死 4 的话右列起点会落到左列第 5 项上，直接报成「两列错位」。
+            const int leftCol = 5;
             for (int i = 0; i < leftCol && i + leftCol < mbRect.Length; i++)
             {
                 if (Math.Abs(mbRect[i].Left - mbRect[0].Left) > 0.5) colA = false;
@@ -1465,6 +1634,7 @@ namespace PerfOverlay
                 var s = SettingsStore.Load();
                 s.ShowCpu = s.ShowMemory = s.ShowFps = s.ShowLowFps = s.ShowVram = true;
                 s.ShowClock = s.ShowGpu = s.ShowCpuTemp = s.ShowGpuTemp = true;   // 全开才量得到最宽的极端情况
+                s.ShowDisplayLatency = true;                                      // 九项全开，宽度取最坏情况
                 s.SizeMode = size;
                 s.OffsetX = s.OffsetY = 0;
 
@@ -1814,7 +1984,9 @@ namespace PerfOverlay
 
         private void InitTray()
         {
-            _trayIcon = LoadIcon(out _trayIconOwned);
+            LoadTrayIcons();
+            _trayIconDarkActive = ThemeManager.SystemTrayPrefersDark();
+            _trayIcon = _trayIconDarkActive ? _trayIconDark : _trayIconLight;
             _tray = new Forms.NotifyIcon
             {
                 // 托盘提示里也带版本号：装了两份 exe 时靠这个分清在跑哪一个
@@ -1934,6 +2106,107 @@ namespace PerfOverlay
         }
 
         /// <summary>
+        /// 加载浅色 / 深色两套托盘图标（都是内嵌资源，跟着 exe 走，不额外落文件）。
+        /// 读不到就退回 exe 自带图标 —— 那是老路径，功能上不会缺，只是不跟随配色。
+        /// </summary>
+        private void LoadTrayIcons()
+        {
+            _trayIconLight = LoadTrayIcon(false);
+            _trayIconDark = LoadTrayIcon(true);
+            if (_trayIconLight == null || _trayIconDark == null)
+            {
+                bool owned;
+                var fallback = LoadIcon(out owned);
+                if (_trayIconLight == null) _trayIconLight = fallback;
+                if (_trayIconDark == null) _trayIconDark = fallback;
+                _trayIconOwned = owned;
+                LogInfo("Tray", "内嵌图标缺失，回落到 exe 图标（不跟随配色）");
+            }
+        }
+
+        private static Icon LoadTrayIcon(bool dark)
+        {
+            try
+            {
+                var asm = System.Reflection.Assembly.GetExecutingAssembly();
+                string name = dark ? "PerfOverlay.tray-dark.ico" : "PerfOverlay.tray-light.ico";
+                using (var st = asm.GetManifestResourceStream(name))
+                {
+                    if (st == null) return null;
+                    // Icon(Stream) 会把整个 ico（7 档尺寸）读进内存，由系统按 DPI 选帧，
+                    // 所以 100% 缩放用 16px、200% 用 32px 都是清晰的，不用手动挑尺寸。
+                    return new Icon(st);
+                }
+            }
+            catch (Exception) { return null; }
+        }
+
+        /// <summary>
+        /// 按「系统任务栏」配色换托盘图标。注意这里读的是 SystemUsesLightTheme，
+        /// 不是面板用的 AppsUseLightTheme —— 图标背后那块底色归系统 UI 管，
+        /// 用户完全可能让窗口浅色、任务栏深色（见 ThemeManager 里的说明）。
+        /// </summary>
+        private void RefreshTrayIcon()
+        {
+            if (_tray == null) return;
+            bool dark = ThemeManager.SystemTrayPrefersDark();
+            var ico = dark ? _trayIconDark : _trayIconLight;
+            if (ico == null) return;
+            // 幂等判断要连「实际引用」一起比，不能只看状态位：
+            // 状态位记的是上次算出来的结论，一旦两者不同步（比如外部改过 Icon），
+            // 只看状态位就再也不会自愈。加上引用比较后，多赋值一次也无副作用。
+            if (dark == _trayIconDarkActive && object.ReferenceEquals(_tray.Icon, ico)) return;
+
+            _trayIconDarkActive = dark;
+            _trayIcon = ico;
+            try { _tray.Icon = ico; } catch (Exception) { }
+            LogInfo("Tray", "图标切换为 " + (dark ? "深色" : "浅色") + " 版");
+        }
+
+        /// <summary>
+        /// 监听系统主题变化：任务栏配色一改就换图标；主题设成 auto 时
+        /// 面板也跟着重刷（0.9.6 之前只有启动那一刻读一次，切系统主题得重启程序）。
+        /// 事件在后台线程触发，动手前一律回 UI 线程。
+        /// </summary>
+        private void HookSystemTheme()
+        {
+            try { Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged; }
+            catch (Exception) { }
+        }
+
+        private void UnhookSystemTheme()
+        {
+            try { Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged; }
+            catch (Exception) { }
+        }
+
+        private void OnUserPreferenceChanged(object sender, Microsoft.Win32.UserPreferenceChangedEventArgs e)
+        {
+            if (e.Category != Microsoft.Win32.UserPreferenceCategory.General &&
+                e.Category != Microsoft.Win32.UserPreferenceCategory.VisualStyle) return;
+
+            var app = Application.Current;
+            if (app == null) return;
+            try
+            {
+                app.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    RefreshTrayIcon();
+                    // 只有「跟随系统」才需要重刷面板：显式选了浅/深的用户
+                    // 不该因为改了系统主题就被换掉配色。
+                    if (_settings != null &&
+                        string.Equals((_settings.Theme ?? "").Trim(), ThemeManager.Auto, StringComparison.OrdinalIgnoreCase))
+                    {
+                        ApplyTheme(ThemeManager.Auto);
+                        if (_overlay != null) _overlay.ApplySettings(_settings, true);
+                        if (_settingsWin != null) _settingsWin.Bind(_settings);
+                    }
+                }));
+            }
+            catch (Exception) { }
+        }
+
+        /// <summary>
         /// 托盘图标直接用 exe 自身内嵌的图标，不额外打包 .ico 文件。
         /// owned=true 表示这个 Icon 是本次新建的、用完必须 Dispose；
         /// 回落到 SystemIcons.Application 时那是共享静态实例，绝不能再释放。
@@ -1972,7 +2245,19 @@ namespace PerfOverlay
             }
             catch (Exception) { }
             try { if (_trayMenu != null) { _trayMenu.Dispose(); _trayMenu = null; } } catch (Exception) { }
-            try { if (_trayIconOwned && _trayIcon != null) _trayIcon.Dispose(); _trayIcon = null; } catch (Exception) { }
+            UnhookSystemTheme();
+            // 只释放两套缓存图标，_trayIcon 只是其中一个的引用，不能再 Dispose 一遍。
+            // 回落分支里它们是 SystemIcons.Application（共享静态实例），绝不能释放，
+            // 所以两个都指向同一实例时直接跳过。
+            try
+            {
+                if (_trayIconOwned && _trayIconLight != null && !object.ReferenceEquals(_trayIconLight, _trayIconDark))
+                    _trayIconLight.Dispose();
+                if (_trayIconOwned && _trayIconDark != null && !object.ReferenceEquals(_trayIconLight, _trayIconDark))
+                    _trayIconDark.Dispose();
+            }
+            catch (Exception) { }
+            _trayIcon = _trayIconLight = _trayIconDark = null;
 
             try { if (_host != null) { _host.Dispose(); _host = null; } } catch (Exception) { }
             try { if (_settingsWin != null) _settingsWin.CloseForShutdown(); } catch (Exception) { }

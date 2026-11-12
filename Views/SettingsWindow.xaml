@@ -171,6 +171,15 @@
                                       ToolTip="最近 10 秒最差 1% 帧的平均帧率"
                                       Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
 
+                            <!-- 显示延迟：默认关。取数走 PresentMon 的 ETW，
+                                 不依赖任何显卡厂商 SDK，NVIDIA / AMD / Intel 通用；
+                                 但独立翻转、覆盖层、Electron 这类路径追不到显示环节，
+                                 开着会看到空值，所以不放进默认开启的几项里。 -->
+                            <CheckBox x:Name="ChkLatency" Grid.Row="4" Grid.Column="0"
+                                      Style="{StaticResource Switch}" Content="显示延迟"
+                                      ToolTip="Present 调用到画面真正出现在屏幕上的毫秒数（中位数）。&#10;不依赖显卡厂商，A/N/I 通用；部分渲染路径追踪不到显示环节，此时显示 --"
+                                      Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
+
                             <!-- 第二列：显存 / 时间 / GPU / CT / GT（默认关闭的都在这一列） -->
                             <CheckBox x:Name="ChkVram" Grid.Row="0" Grid.Column="2"
                                       Style="{StaticResource Switch}" Content="显存"

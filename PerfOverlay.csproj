@@ -14,10 +14,10 @@
     <Platforms>x64</Platforms>
 
     <!-- 版本与署名 -->
-    <Version>0.9.6</Version>
-    <AssemblyVersion>0.9.6.0</AssemblyVersion>
-    <FileVersion>0.9.6.0</FileVersion>
-    <InformationalVersion>0.9.6</InformationalVersion>
+    <Version>0.9.7</Version>
+    <AssemblyVersion>0.9.7.0</AssemblyVersion>
+    <FileVersion>0.9.7.0</FileVersion>
+    <InformationalVersion>0.9.7</InformationalVersion>
     <AssemblyTitle>PerfOverlay 性能浮窗</AssemblyTitle>
     <Product>PerfOverlay</Product>
     <Description>轻量桌面性能浮窗：CPU / 内存 / 帧数 / 1% Low / 显存 / GPU / 温度 / 时间</Description>
@@ -85,6 +85,13 @@
       只在 CPU 是 Intel 且用户点了安装之后才加载，AMD 机器上永远不会碰到它。
     -->
     <EmbeddedResource Include="tools\IntelMSR.bin" LogicalName="PerfOverlay.IntelMSR.bin" />
+    <!--
+      托盘图标两套（浅色 / 深色），由 tools/make-icons.py 从 logo 生成。
+      打进 exe 而不是放外部文件：托盘图标要在运行时按系统任务栏配色热切换，
+      从嵌入资源读一次即可，发布物依旧只有一个 exe。
+    -->
+    <EmbeddedResource Include="assets\PerfOverlay-light.ico" LogicalName="PerfOverlay.tray-light.ico" />
+    <EmbeddedResource Include="assets\PerfOverlay-dark.ico" LogicalName="PerfOverlay.tray-dark.ico" />
   </ItemGroup>
 
 </Project>

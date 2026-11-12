@@ -52,6 +52,15 @@ namespace PerfOverlay.Services
         public double TempGpuC;
         public bool TempGpuOk;
         public string TempGpuDetail = "";
+
+        // ---- 显示延迟（默认关闭，用户自己在面板里勾）----
+        /// <summary>中位显示延迟（毫秒）：Present 调用 → 该帧被扫到屏幕上。</summary>
+        public double LatencyMs;
+        /// <summary>P95，给 tooltip 用；浮窗上只显示中位数。</summary>
+        public double LatencyP95Ms;
+        public bool LatencyOk;
+        public int LatencySamples;
+        public string LatencyDetail = "";
     }
 
     /// <summary>
@@ -205,6 +214,7 @@ namespace PerfOverlay.Services
             // 权限够才启动 PresentMon：否则子进程会立刻报 access denied 并刷屏
             if (Frames.PresentMonFound && PrivilegeHelper.CanCaptureFrames)
             {
+                Frames.CaptureLatency = _settings != null && _settings.ShowDisplayLatency;
                 _framesStarted = Frames.Start();
                 if (!_framesStarted && Frames.LastError.Length > 0) _framesWhy = Frames.LastError;
             }
@@ -217,6 +227,9 @@ namespace PerfOverlay.Services
         public void ApplySettings(AppSettings settings)
         {
             lock (_settingsGate) { _settings = settings.Clone(); }
+            // 延迟这一列要不要解析，直接告诉引擎：关掉时每帧少切一次列。
+            // 只切解析开关，不重启 PresentMon —— v1_metrics 本来每行就带着这一列。
+            Frames.CaptureLatency = settings != null && settings.ShowDisplayLatency;
         }
 
         private void Loop()
@@ -413,6 +426,28 @@ namespace PerfOverlay.Services
             snap.TargetProcess = f.TargetProcess;
             snap.FpsMessage = f.Message;
             if (!snap.FpsOk && snap.FpsMessage.Length == 0) snap.FpsMessage = FramesDiagnostic;
+
+            // 显示延迟：只有开了才有内容。拿不到就把原因给出去 —— 这条链路
+            // 在独立翻转 / 覆盖层 / Electron 上本来就追不到显示环节，不是故障。
+            if (s != null && s.ShowDisplayLatency)
+            {
+                snap.LatencyOk = f.LatencyOk && PrivilegeHelper.CanCaptureFrames && Frames.IsRunning;
+                snap.LatencyMs = f.LatencyP50Ms;
+                snap.LatencyP95Ms = f.LatencyP95Ms;
+                snap.LatencySamples = f.LatencySamples;
+                if (snap.LatencyOk)
+                {
+                    snap.LatencyDetail = string.Format(
+                        "显示延迟：Present 到出屏的中位数 {0:0.0} ms（P95 {1:0.0} ms，{2} 帧样本）",
+                        f.LatencyP50Ms, f.LatencyP95Ms, f.LatencySamples);
+                }
+                else
+                {
+                    snap.LatencyDetail = f.LatencyMessage.Length > 0
+                        ? f.LatencyMessage
+                        : (f.Message.Length > 0 ? f.Message : FramesDiagnostic);
+                }
+            }
 
             return snap;
         }

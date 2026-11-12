@@ -38,6 +38,15 @@ namespace PerfOverlay.Services
         [DataMember(Order = 25)] public bool ShowCpuTemp = false;  // CT：CPU 温度
         [DataMember(Order = 26)] public bool ShowGpuTemp = false;  // GT：GPU 温度
 
+        /// <summary>
+        /// 显示延迟（Present 调用 → 该帧真的被扫到屏幕上，毫秒）。
+        /// 默认关闭：这个数只有「能追踪到显示环节」的渲染路径才给得出来
+        /// （独立翻转 / 覆盖层 / Electron 常常整段拿不到），开着会有不少 `--`，
+        /// 不知道这条链路的人只会以为程序坏了。想看的人自己在面板里勾。
+        /// 取数不依赖任何显卡厂商的 SDK —— 走 PresentMon 的 ETW 事件，A/N/I 一视同仁。
+        /// </summary>
+        [DataMember(Order = 29)] public bool ShowDisplayLatency = false;
+
         /// <summary>配置结构版本。1 = CT/GT 已拆分。新对象直接是 1，旧文件读出来是 0。</summary>
         [DataMember(Order = 27)] public int SchemaVersion = 1;
 
@@ -122,7 +131,7 @@ namespace PerfOverlay.Services
         public bool AnyMetricVisible()
         {
             return ShowCpu || ShowMemory || ShowFps || ShowLowFps || ShowVram
-                || ShowClock || ShowGpu || ShowCpuTemp || ShowGpuTemp;
+                || ShowClock || ShowGpu || ShowCpuTemp || ShowGpuTemp || ShowDisplayLatency;
         }
 
         /// <summary>是否需要向 nvml.dll 要数据（GPU 温度与 GPU 利用率共用一份句柄）。</summary>
