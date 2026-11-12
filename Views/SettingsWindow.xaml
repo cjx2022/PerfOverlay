@@ -14,7 +14,7 @@
         TextOptions.TextFormattingMode="Ideal">
 
     <Window.Resources>
-        <!-- 提示小圈：给「只对游戏有效」这类口径限制做说明。
+        <!-- 提示小圈：给「体感参考」这类口径做说明。
              14 DIP，与温度那个感叹号同尺寸，不抢布局也不改变行的基线；
              颜色用中性 hint 色，hover 才转强调色 —— 它不是警告，只是说明。 -->
         <Style x:Key="InfoTip" TargetType="Border">
@@ -196,10 +196,9 @@
                                       Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
 
                             <!-- 显示延迟：默认关。取数走 PresentMon 的 ETW，
-                                 不依赖任何显卡厂商 SDK，NVIDIA / AMD / Intel 通用；
-                                 但独立翻转、覆盖层、Electron 这类路径追不到显示环节，
-                                 开着会看到空值，所以不放进默认开启的几项里。
-                                 旁边那个小圈点明这件事：只有游戏拿得到数。 -->
+                                 不依赖任何显卡厂商 SDK，NVIDIA / AMD / Intel 通用。
+                                 默认关只是因为多开一路采集，不是因为取不到数。
+                                 小圈里只留体感参考，不写适用范围。 -->
                             <StackPanel Grid.Row="4" Grid.Column="0" Orientation="Horizontal">
                                 <CheckBox x:Name="ChkLatency"
                                           Style="{StaticResource Switch}" Content="显示延迟"
@@ -212,10 +211,7 @@
                                     <Border.ToolTip>
                                         <ToolTip MaxWidth="330">
                                             <StackPanel>
-                                                <TextBlock Text="只在游戏里拿得到" FontWeight="SemiBold" Margin="0,0,0,4" />
-                                                <TextBlock TextWrapping="Wrap"
-                                                           Text="量的是 Present 调用到画面扫上屏幕的时间。只有渲染路径允许追踪显示环节时才有值：&#10;· 有数：独占全屏 / 无边框全屏的游戏、部分本地播放器&#10;· 无数：浏览器（含网页视频）、Electron 应用、窗口化播放 —— 这些走 DirectComposition，系统不上报出屏时刻，会一直显示 --" />
-                                                <TextBlock Text="体感参考（中位数）" FontWeight="SemiBold" Margin="0,8,0,4" />
+                                                <TextBlock Text="体感参考（中位数）" FontWeight="SemiBold" Margin="0,0,0,4" />
                                                 <TextBlock TextWrapping="Wrap"
                                                            Text="· ≤ 8 ms　几乎无感&#10;· 8–17 ms　顺畅（60Hz 一帧约 16.7 ms）&#10;· 17–33 ms　轻微发钝，快速转视角能察觉&#10;· 33–50 ms　明显拖手&#10;· &gt; 50 ms　卡顿可感知" />
                                                 <TextBlock TextWrapping="Wrap" Margin="0,8,0,0" Opacity="0.75"

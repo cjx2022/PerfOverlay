@@ -34,6 +34,12 @@ namespace PerfOverlay
         private Icon _trayIconDark;
         // 上一次实际用的那套（true = 深色），用来避免同一状态下重复赋值
         private bool _trayIconDarkActive;
+        // 真正交给 shell 的那个 Icon 实例。它可能是按系统小图标尺寸重建出来的
+        // （new Icon(src, size)），和 _trayIconLight / _trayIconDark 不是同一个对象，
+        // 所以幂等比较必须拿它来比，否则每次轮询都会误判成「变了」。
+        private Icon _trayIconApplied;
+        private int _trayIconAppliedSize;
+        private bool _trayIconAppliedDark;
         // 托盘配色轮询：系统事件不可靠，2 秒对一次注册表
         private DispatcherTimer _trayThemeWatch;
 
@@ -718,30 +724,112 @@ namespace PerfOverlay
             }
             else { sb.AppendLine("   ✗ 图标未加载"); fails++; }
 
+            // 取哪版的规则：显式选择优先于任务栏底色，只有 auto 才跟系统。
+            // 这一组是纯函数断言 —— 不依赖 _settings、不依赖托盘对象，规则改错立刻红。
+            {
+                var cases = new[]
+                {
+                    new object[] { "dark",  false, true,  "选深色 / 系统浅色" },
+                    new object[] { "light", true,  false, "选浅色 / 系统深色" },
+                    new object[] { "auto",  true,  true,  "跟随系统（系统深色）" },
+                    new object[] { "auto",  false, false, "跟随系统（系统浅色）" },
+                    new object[] { null,    true,  true,  "未设置（按跟随系统）" },
+                };
+                int bad = 0;
+                foreach (var c in cases)
+                    if (TrayPrefersDarkFor((string)c[0], (bool)c[1]) != (bool)c[2]) bad++;
+                sb.AppendLine(string.Format("   取版规则 {0} 条 {1}", cases.Length, bad == 0 ? "OK" : "✗ 错 " + bad + " 条"));
+                if (bad > 0) fails++;
+            }
+
             // 切换：把状态缓存设成相反值，逼 RefreshTrayIcon 真的算一次
             try
             {
-                _tray = new Forms.NotifyIcon { Icon = _trayIconLight, Visible = false };
-                bool wantDark = ThemeManager.SystemTrayPrefersDark();
+                _tray = new Forms.NotifyIcon { Visible = false };
+                _trayIconApplied = null;
+                bool wantDark = TrayPrefersDark();
                 _trayIconDarkActive = !wantDark;
                 RefreshTrayIcon();
-                bool hit = object.ReferenceEquals(_tray.Icon, wantDark ? _trayIconDark : _trayIconLight);
-                sb.AppendLine(string.Format("   系统任务栏: {0} → 期望{1}版 {2}",
-                    wantDark ? "深色" : "浅色", wantDark ? "深" : "浅", hit ? "OK" : "✗"));
+
+                bool hit = _tray.Icon != null && _trayIconAppliedDark == wantDark;
+                sb.AppendLine(string.Format("   当前设置 {0} / 系统应用模式 {1} → 期望{2}版 {3}",
+                    (_settings == null ? "(null)" : _settings.Theme),
+                    ThemeManager.SystemPrefersDark() ? "深色" : "浅色",
+                    wantDark ? "深" : "浅", hit ? "OK" : "✗"));
                 if (!hit) fails++;
+
+                // 尺寸：交给 shell 的必须是系统小图标尺寸那一帧。
+                // 之前直接把整组 ico 丢过去，shell 自己缩，深/浅两版缩完几乎一个样，
+                // 看着就像「没跟随」。
+                int want_size = PickIcoFrame(TrayIconSize());
+                bool sized = _tray.Icon != null
+                             && _tray.Icon.Width == want_size
+                             && _tray.Icon.Height == want_size;
+                sb.AppendLine(string.Format("   实际挂载尺寸: {0}x{1}，按系统 {2}px 取帧 {3}x{3} {4}",
+                    _tray.Icon == null ? 0 : _tray.Icon.Width,
+                    _tray.Icon == null ? 0 : _tray.Icon.Height,
+                    TrayIconSize(), want_size, sized ? "OK" : "✗"));
+                if (!sized) fails++;
+
+                // 走用户真实路径：设置面板改主题 → ApplySettings → ApplyTheme → 托盘图标。
+                // 只测 RefreshTrayIcon 不够 —— 上一版的毛病正是 ApplyTheme 里只刷了托盘菜单，
+                // 压根没通知图标，函数本身再对也没人调。
+                if (_settings != null)
+                {
+                    string keep = _settings.Theme;
+                    foreach (string pick in new[] { "light", "dark" })
+                    {
+                        _settings.Theme = pick;
+                        ApplyTheme(pick);
+                        bool ok = _trayIconAppliedDark == (pick == "dark");
+                        sb.AppendLine(string.Format("   面板选 {0} → 图标{1}版 {2}",
+                            pick, ok ? pick : "未换", ok ? "OK" : "✗"));
+                        if (!ok) fails++;
+                    }
+
+                    // auto 要回到「跟系统」，用系统实际值判
+                    _settings.Theme = "auto";
+                    ApplyTheme("auto");
+                    bool autoOk = _trayIconAppliedDark == ThemeManager.SystemPrefersDark();
+                    sb.AppendLine(string.Format("   面板选 auto → 跟系统 {0}，实际{1}版 {2}",
+                        ThemeManager.SystemPrefersDark() ? "深色" : "浅色",
+                        _trayIconAppliedDark ? "深" : "浅", autoOk ? "OK" : "✗"));
+                    if (!autoOk) fails++;
+
+                    _settings.Theme = keep;     // 探针不能改掉用户的设置
+                }
 
                 // 反向：状态位记「已经是目标版」，但实际引用是另一套。
                 // 只比状态位的实现会直接 return、留在错的那套上，所以这一步必须过。
+                Icon other = wantDark ? _trayIconLight : _trayIconDark;
                 _trayIconDarkActive = wantDark;
-                _tray.Icon = wantDark ? _trayIconLight : _trayIconDark;
+                _tray.Icon = other;
+                _trayIconApplied = other;
+                _trayIconAppliedDark = !wantDark;
                 RefreshTrayIcon();
-                bool back = object.ReferenceEquals(_tray.Icon, wantDark ? _trayIconDark : _trayIconLight);
+                bool back = _tray.Icon != null && _trayIconAppliedDark == wantDark;
                 sb.AppendLine(string.Format("   状态位与实际引用不同步时自愈 {0}", back ? "OK" : "✗"));
                 if (!back) fails++;
+
+                // 深/浅两版真的不是同一张图（换过去要有可见变化，否则跟随等于没做）
+                if (_trayIconLight != null && _trayIconDark != null)
+                {
+                    using (var a = _trayIconLight.ToBitmap())
+                    using (var b = _trayIconDark.ToBitmap())
+                    {
+                        System.Drawing.Color ca = a.GetPixel(a.Width / 2, 2);
+                        System.Drawing.Color cb = b.GetPixel(b.Width / 2, 2);
+                        int dd = Math.Abs(ca.R - cb.R) + Math.Abs(ca.G - cb.G) + Math.Abs(ca.B - cb.B);
+                        sb.AppendLine(string.Format("   顶边色 浅 {0} / 深 {1}，通道差 {2} {3}",
+                            Rgb(ca), Rgb(cb), dd, dd >= 60 ? "OK" : "✗ 两版太接近"));
+                        if (dd < 60) fails++;
+                    }
+                }
 
                 _tray.Visible = false;
                 _tray.Dispose();
                 _tray = null;
+                _trayIconApplied = null;
             }
             catch (Exception ex) { sb.AppendLine("切换异常: " + ex.Message); fails++; }
 
@@ -768,6 +856,11 @@ namespace PerfOverlay
                 }
                 return buf;
             }
+        }
+
+        private static string Rgb(System.Drawing.Color c)
+        {
+            return string.Format("#{0:X2}{1:X2}{2:X2}", c.R, c.G, c.B);
         }
 
         /// <summary>读 ICO 头，列出里面有哪些尺寸（0 表示 256）。</summary>
@@ -1945,9 +2038,11 @@ namespace PerfOverlay
             _overlay.ApplySettings(cfg, rowsChanged);
             if (_host != null) _host.ApplySettings(cfg);
 
-            // 主题：面板自己已经换过了（点了就生效），这里补的是面板管不到的托盘菜单
-            // （NotifyIcon 是 WinForms，读不到 WPF 的 DynamicResource）。
-            if (_trayMenu != null && !string.Equals(oldTheme, cfg.Theme ?? "", StringComparison.OrdinalIgnoreCase))
+            // 主题：面板自己已经换过了（点了就生效），这里补的是面板管不到的
+            // 托盘菜单与托盘图标（NotifyIcon 是 WinForms，读不到 WPF 的 DynamicResource）。
+            // 别把「菜单非空」当前置条件 —— 图标不需要菜单，条件写紧了就出现
+            // 「菜单没建好 → 主题切了但图标不换」。
+            if (!string.Equals(oldTheme, cfg.Theme ?? "", StringComparison.OrdinalIgnoreCase))
                 ApplyTheme(cfg.Theme);
 
             if (!string.Equals(oldHotkey, cfg.Hotkey ?? "", StringComparison.OrdinalIgnoreCase))
@@ -2121,15 +2216,18 @@ namespace PerfOverlay
         private void InitTray()
         {
             LoadTrayIcons();
-            _trayIconDarkActive = ThemeManager.SystemTrayPrefersDark();
+            _trayIconDarkActive = TrayPrefersDark();
             _trayIcon = _trayIconDarkActive ? _trayIconDark : _trayIconLight;
             _tray = new Forms.NotifyIcon
             {
                 // 托盘提示里也带版本号：装了两份 exe 时靠这个分清在跑哪一个
                 Text = "PerfOverlay v" + UpdateChecker.CurrentVersion,
-                Icon = _trayIcon,
-                Visible = _settings.ShowTrayIcon
+                Visible = false
             };
+            // 先按当前 DPI 选好帧再挂上去（见 ApplyTrayIcon 里的说明），
+            // 直接 Icon = _trayIcon 会把整组图标的 HICON 丢给 shell 自己缩。
+            ApplyTrayIcon(_trayIcon, _trayIconDarkActive, true);
+            _tray.Visible = _settings.ShowTrayIcon;
 
             var palette = ThemeManager.MenuPalette.Current();
             var menu = new Forms.ContextMenuStrip
@@ -2224,7 +2322,42 @@ namespace PerfOverlay
         {
             string effective = ThemeManager.Apply(theme);
             RefreshTrayTheme();
+            // 面板换了配色，托盘图标也要跟着换。
+            // 只刷菜单不刷图标，表现就是「设置里切了深色，面板黑了、右下角图标没动」。
+            RefreshTrayIcon();
             LogInfo("Theme", "switch to " + effective + "（setting=" + (theme ?? "(null)") + "）");
+        }
+
+        /// <summary>
+        /// 托盘图标该用深色版还是浅色版。
+        ///
+        /// 规则：**用户显式选了深/浅就听用户的**，只有「跟随系统」才去读注册表的系统主题。
+        ///
+        /// 关键：auto 读的是 **AppsUseLightTheme**（和面板同一个信号），不是
+        /// SystemUsesLightTheme（任务栏那项）。两项在注册表里是独立的，本机就出现过
+        /// AppsUseLightTheme=1 / SystemUsesLightTheme=0 的组合 —— 按任务栏那项算，
+        /// 结果就是「面板是浅色、图标是黑板」，B 界面里看着像没跟随系统。
+        /// 而且这种深色任务栏上，黑板（#0E1116）对比只有 0.9:1，整块糊死、只剩一根白线；
+        /// 蓝板（#1966D2）有 3:1，反而更清楚。所以统一跟「应用模式」这一个信号。
+        /// </summary>
+        private bool TrayPrefersDark()
+        {
+            string t = (_settings == null ? null : _settings.Theme) ?? "";
+            return TrayPrefersDarkFor(t, ThemeManager.SystemPrefersDark());
+        }
+
+        /// <summary>
+        /// 规则的纯函数版：给定「设置里的主题值」和「系统是否深色」，算图标该用哪版。
+        /// 抽出来是为了能被探针直接验证 —— 探针跑起来时根本没有 _settings，
+        /// 挂在上面的规则等于永远不会被执行到，等于没测。
+        /// </summary>
+        internal static bool TrayPrefersDarkFor(string themeSetting, bool systemDark)
+        {
+            string t = (themeSetting ?? "").Trim();
+            if (string.Equals(t, ThemeManager.Dark, StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(t, ThemeManager.Light, StringComparison.OrdinalIgnoreCase)) return false;
+            // auto / 空 / 认不出的值，一律跟随系统的应用模式（与面板同一信号）
+            return systemDark;
         }
 
         private void RefreshTrayTheme()
@@ -2278,25 +2411,118 @@ namespace PerfOverlay
         }
 
         /// <summary>
-        /// 按「系统任务栏」配色换托盘图标。注意这里读的是 SystemUsesLightTheme，
-        /// 不是面板用的 AppsUseLightTheme —— 图标背后那块底色归系统 UI 管，
-        /// 用户完全可能让窗口浅色、任务栏深色（见 ThemeManager 里的说明）。
+        /// 按主题换托盘图标。深浅结论由 TrayPrefersDark() 给，auto 时跟系统的
+        /// **应用模式**（AppsUseLightTheme）走，与面板同一个信号 —— 面板和图标不能打架。
+        /// 早先跟任务栏那项（SystemUsesLightTheme），在本机那种「应用浅、任务栏深」
+        /// 的组合下就是「面板白、图标黑」。
         /// </summary>
         private void RefreshTrayIcon()
         {
             if (_tray == null) return;
-            bool dark = ThemeManager.SystemTrayPrefersDark();
+            bool dark = TrayPrefersDark();
             var ico = dark ? _trayIconDark : _trayIconLight;
             if (ico == null) return;
-            // 幂等判断要连「实际引用」一起比，不能只看状态位：
-            // 状态位记的是上次算出来的结论，一旦两者不同步（比如外部改过 Icon），
-            // 只看状态位就再也不会自愈。加上引用比较后，多赋值一次也无副作用。
-            if (dark == _trayIconDarkActive && object.ReferenceEquals(_tray.Icon, ico)) return;
+
+            // 幂等判断四个条件都成立才跳过：
+            //   ① 深浅结论没变  ② 实际挂的也是这一套  ③ shell 手上确实是这个对象  ④ 尺寸没被 DPI 改掉
+            // ② 单独列出来是必须的：状态位记的是「算出来的结论」，而 _trayIconAppliedDark
+            // 记的是「真正挂上去的是哪套」。两者会不同步（切换时抛异常、外部改了 Icon），
+            // 只比 ① 就再也不会自愈 —— 表现就是「主题换了，图标钉死不动」。
+            int frame = PickIcoFrame(TrayIconSize());
+            if (dark == _trayIconDarkActive
+                && _trayIconAppliedDark == dark
+                && object.ReferenceEquals(_tray.Icon, _trayIconApplied)
+                && frame == _trayIconAppliedSize)
+                return;
 
             _trayIconDarkActive = dark;
             _trayIcon = ico;
-            try { _tray.Icon = ico; } catch (Exception) { }
-            LogInfo("Tray", "图标切换为 " + (dark ? "深色" : "浅色") + " 版");
+            ApplyTrayIcon(ico, dark, false);
+            LogInfo("Tray", "图标切换为 " + (dark ? "深色" : "浅色") + " 版（" + frame + "px 帧）");
+        }
+
+        /// <summary>托盘图标该用多大：跟着系统的小图标尺寸（100% = 16，125% = 20，200% = 32）。</summary>
+        private static int TrayIconSize()
+        {
+            try
+            {
+                int s = Forms.SystemInformation.SmallIconSize.Width;
+                return s < 16 ? 16 : s;
+            }
+            catch (Exception) { return 16; }
+        }
+
+        /// <summary>ico 里实际有的帧档位（和 make-icons.py 的 ICO_SIZES 一致）。</summary>
+        private static readonly int[] IcoFrames = { 16, 24, 32, 48, 64, 128, 256 };
+
+        /// <summary>
+        /// 从 ico 已有的帧里挑一张来用。
+        ///
+        /// 不能直接 new Icon(src, 系统尺寸) —— 系统在 125% DPI 下要 20px，
+        /// 而 ico 里没有 20px 帧，构造函数会把别的帧**重采样**成 20px，
+        /// 白线的抗锯齿边被二次插值糊掉，正好毁掉小尺寸下最要紧的清晰度。
+        /// 所以取「不小于目标的最小帧」（20 → 24，32 → 32），让系统自己缩，
+        /// 下采样总比上采样干净。
+        /// </summary>
+        private static int PickIcoFrame(int want)
+        {
+            foreach (int f in IcoFrames) if (f >= want) return f;
+            return IcoFrames[IcoFrames.Length - 1];
+        }
+
+        /// <summary>
+        /// 把图标真正交给 shell。
+        ///
+        /// 两个坑叠在一起，缺一个都会出现「日志说切了、托盘没变」：
+        ///   ① 尺寸 —— new Icon(stream) 加载的是整组图标，Icon.Width 取首帧（16）。
+        ///      直接把整组 HICON 交给 shell，shell 在高 DPI 下自己缩，缩出来发虚。
+        ///      所以按 SystemInformation.SmallIconSize 用 new Icon(src, size) 精确取帧。
+        ///   ② 刷新 —— 光给 NotifyIcon.Icon 赋值走的是 NIM_MODIFY，Win11 上
+        ///      偶尔沿用旧 HICON（尤其深/浅两版尺寸相同时，shell 认为没变化）。
+        ///      先 Visible=false 再挂回，走 NIM_DELETE + NIM_ADD，必定重画。
+        ///
+        /// forceSize=true 用于首次挂载：此时还不知道尺寸，无条件重建一次。
+        /// </summary>
+        private void ApplyTrayIcon(Icon src, bool dark, bool forceSize)
+        {
+            if (_tray == null || src == null) return;
+
+            int want = TrayIconSize();
+            int frame = PickIcoFrame(want);
+            // 只有「同一套图标 + 尺寸没变」才能复用上次裁好的那个。
+            // 深浅换了仍复用，就等于把旧图又挂回去 —— 这正是最容易写错的地方。
+            bool canReuse = !forceSize
+                            && _trayIconApplied != null
+                            && _trayIconAppliedSize == frame
+                            && _trayIconAppliedDark == dark;
+
+            Icon sized = src;
+            if (canReuse)
+            {
+                sized = _trayIconApplied;
+            }
+            else if (src.Width != frame || src.Height != frame)
+            {
+                try { sized = new Icon(src, frame, frame); }
+                catch (Exception) { sized = src; }
+            }
+
+            bool wasVisible = _tray.Visible;
+            try
+            {
+                if (wasVisible) _tray.Visible = false;
+                _tray.Icon = sized;
+                if (wasVisible) _tray.Visible = true;
+            }
+            catch (Exception)
+            {
+                // 摘下来之后一定要挂回去，否则托盘上直接没有图标了
+                try { if (wasVisible) _tray.Visible = true; } catch (Exception) { }
+            }
+
+            _trayIconApplied = sized;
+            _trayIconAppliedSize = frame;
+            _trayIconAppliedDark = dark;
         }
 
         /// <summary>

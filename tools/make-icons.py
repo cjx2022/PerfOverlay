@@ -3,8 +3,8 @@
 """生成程序图标（纯程序化，不依赖任何外部图片）。
 
 产物：
-  assets/PerfOverlay-light.ico  给浅色任务栏用（深蓝底）
-  assets/PerfOverlay-dark.ico   给深色任务栏用（亮蓝底）
+  assets/PerfOverlay-light.ico  给浅色任务栏用（蓝底，与设计稿逐像素一致）
+  assets/PerfOverlay-dark.ico   给深色任务栏用（近黑底 + 一圈细白框）
   app.ico                       exe 主图标（= 浅色版）
 
 用法：python tools/make-icons.py
@@ -26,7 +26,7 @@ ICO_SIZES = [16, 24, 32, 48, 64, 128, 256]
 # 但缩到 16/24 就是一片灰：网格和数字占掉大半像素，折线只剩 1px。任务栏显示
 # 的恰恰是 16~24，那一版等于白做。所以改成程序化绘制，三步保证小尺寸清楚：
 #   1. 折线跨度拉满 —— 起点贴左下、终点贴右上，斜率够大才看得出趋势；
-#   2. 折点数随尺寸递减 —— 16px 只画 1 个肘部，64px 以上才画完整波动；
+#   2. 折点全尺寸同一套 —— 托盘与文件图标必须是同一条线，不按尺寸简化；
 #   3. 抗锯齿遮罩做硬化 —— 下采样后的半透明边不发灰，线宽不会被啃细。
 # ----------------------------------------------------------------------
 BG_FOR_LIGHT_TASKBAR = (25, 102, 210)    # #1966D2，压在浅灰任务栏上对比 6:1
@@ -34,25 +34,27 @@ BG_FOR_DARK_TASKBAR = (14, 17, 22)       # #0E1116 近黑，深色任务栏上�
 WHITE = (255, 255, 255)
 SUPERSAMPLE = 8                          # 16px 也是 128×128 画，边缘才够平
 
-# 折线端点：左下 (60) -> 右上 (165)。斜度大，缩到 16px 也是一条明确的上升线。
-# 折点表按尺寸分组：小尺寸少折点，否则折角糊在一起反而像一根粗斜线。
+# 不加描边，两版都不加。
 #
-# 中间折点必须**离开首尾连线**，否则三点共线，16px 上就退化成斜杠。
-# 小尺寸取「前段近乎平走、后段陡升」：两段夹角 ~45°，肘部法向偏移在 16px 上
-# 约 3px（线宽才 2px），所以缩到任务栏也是「折线」而不是「一根斜杠」。
-# 端点留 0.155/0.845 的内边距：线宽一半约 0.065，贴太紧会被圆角啃掉。
-LINE_SMALL = [(0.135, 0.845), (0.535, 0.735), (0.865, 0.155)]    # 16/24：一个肘部
-LINE_MID = [(0.145, 0.855), (0.360, 0.600), (0.580, 0.700), (0.855, 0.145)]  # 32/48
-LINE_LARGE = [(0.135, 0.865), (0.300, 0.635), (0.455, 0.690),
-              (0.615, 0.455), (0.775, 0.520), (0.865, 0.135)]    # 64 以上：完整波动
+# 试过：`rounded_rectangle(outline=…, width=…)` 是沿圆角路径**向内**描边，
+# 20px 上「1px 框」等于吃掉 5% 的块、把折线的边距也压掉一圈 —— 那不是「加个框」，
+# 是换了个 logo；而且 24px 帧缩到 20px 后白框只剩一圈 50% 灰，比不加更脏。
+# 结论：不加。浅色版 ico 与设计稿 sha256 逐字节一致。
 
-
-def line_points(size):
-    if size <= 24:
-        return LINE_SMALL
-    if size <= 48:
-        return LINE_MID
-    return LINE_LARGE
+# 折线：全尺寸共用一套 4 个折点，不做「小尺寸简化」。
+#
+# 之前按尺寸分三档（16/24 三点、32/48 四点、64+ 六点），看着像照顾小尺寸，
+# 实际是同一个 logo 在不同地方形状不一样：托盘 20px 取 24 帧（三点，中段平走），
+# 文件图标 20px 是 32/48 帧缩下来的（四点，中段带一个下凹）——
+# 实测两张 20px 图中心线平均差 1.09px，肉眼就是「不是同一条线」。
+#
+# 现在统一用下面这套四点（原 32/48 档的几何），实测与参考文件的 20px 中心线
+# 偏差 0.16px，而三点档 1.09px、六点档 1.16px —— 这就是「文件图标」那条线。
+#
+# 中间折点必须**离开首尾连线**，否则退化成斜杠：第二点在首尾连线上方、
+# 第三点在下方，形成 上→下凹→陡升 的折线，缩到 16px 也认得出是折线。
+# 端点内边距 0.145/0.855：线宽一半约 0.065，贴太紧会被圆角啃掉。
+LINE = [(0.145, 0.855), (0.360, 0.600), (0.580, 0.700), (0.855, 0.145)]
 
 
 def harden(mask):
@@ -70,21 +72,22 @@ def harden(mask):
 
 
 def render(size, bg):
-    """画一张 size×size 的图标。"""
+    """画一张 size×size 的图标：圆角底块 + 白色折线。"""
     big = size * SUPERSAMPLE
+    radius = int(round(big * 0.22))
 
-    # 底块也在超采样尺度上画：直接按目标尺寸画圆角，16px 下会缺角
+    # 底块在超采样尺度上画：直接按目标尺寸画圆角，16px 下会缺角
     # （PIL 的 rounded_rectangle 在半径小于 3px 时角部不精确）。
     base = Image.new("RGBA", (big, big), (0, 0, 0, 0))
     ImageDraw.Draw(base).rounded_rectangle(
-        [0, 0, big - 1, big - 1], radius=int(round(big * 0.22)), fill=bg + (255,))
-    base = base.resize((size, size), Image.LANCZOS)
+        [0, 0, big - 1, big - 1], radius=radius, fill=bg + (255,))
+    im = base.resize((size, size), Image.LANCZOS)
 
     # 前景单独画在透明层上再叠底：直接在底色上画，下采样的半透明边
     # 会和蓝底混出一圈灰，16px 上特别明显。
     fg = Image.new("L", (big, big), 0)
     fd = ImageDraw.Draw(fg)
-    pts = [(x * big, y * big) for x, y in line_points(size)]
+    pts = [(x * big, y * big) for x, y in LINE]
     # 线宽下限 2.1px：16px 再细就只剩一条虚影；小尺寸再抬一档，
     # 因为硬化会啃掉边缘半圈，实际视觉宽度比设定值窄。
     coef = 0.130 if size <= 24 else 0.115
@@ -96,7 +99,6 @@ def render(size, bg):
 
     fg = harden(fg.resize((size, size), Image.LANCZOS))
 
-    im = base
     im.paste(Image.new("RGBA", (size, size), WHITE + (255,)), (0, 0), fg)
     return im
 
@@ -106,7 +108,8 @@ def main():
         os.makedirs(OUT)
 
     variants = {
-        "light": BG_FOR_LIGHT_TASKBAR,   # 名字是「给哪套任务栏用」，不是图标颜色
+        # 名字是「给哪套主题用」，不是图标颜色
+        "light": BG_FOR_LIGHT_TASKBAR,
         "dark": BG_FOR_DARK_TASKBAR,
     }
     for k, bg in variants.items():

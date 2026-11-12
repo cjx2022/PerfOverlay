@@ -791,7 +791,7 @@ namespace PerfOverlay.Services
                         else
                         {
                             snap.LatencyMessage = _delayScratch.Count == 0
-                                ? "这段画面追踪不到显示环节（浏览器 / 窗口化播放普遍如此，游戏才拿得到）"
+                                ? "这段画面追踪不到显示环节（该渲染路径不上报出屏时刻）"
                                 : "采样中";
                         }
                     }

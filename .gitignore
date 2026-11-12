@@ -10,6 +10,9 @@ _shots/
 _tools/
 _test/*.bat
 _test/*.txt
+# _test 顶层散落的调试件不进库；回放用例（_test/csv）才是要留的
+_test/*
+!_test/csv/
 dist/
 
 # 发布过程的临时物（release notes 本身留档，URL 不存）
