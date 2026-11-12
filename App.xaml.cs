@@ -327,6 +327,7 @@ namespace PerfOverlay
                            || HasArg(e.Args, "--pawnio-status") || HasArg(e.Args, "--pawnio-install")
                            || HasArg(e.Args, "--theme-probe") || HasArg(e.Args, "--tray-menu")
                            || HasArg(e.Args, "--tray-icon-test")
+                           || HasArg(e.Args, "--pm-cols")
                            || HasArg(e.Args, "--clean-etw-system");
             if (!PrivilegeHelper.IsElevated
                 && !uiProbe
@@ -338,6 +339,7 @@ namespace PerfOverlay
                 // --force-takeover 是「旧实例卡死了，直接顶掉它」，同样要放行。
                 if (!HasArg(e.Args, "--takeover")
                     && !HasArg(e.Args, "--force-takeover")
+                    && !IsWindowlessProbe(e.Args)
                     && InstanceAlreadyRunning())
                 {
                     LogInfo("AlreadyRunning", "已有实例在运行，本次启动直接退出");
@@ -394,7 +396,14 @@ namespace PerfOverlay
                 }
             }
 
-            if (!created)
+            if (!created && IsWindowlessProbe(e.Args))
+            {
+                // 诊断探针不建窗口、不碰托盘，跟常驻实例抢互斥体没有意义。
+                // 让它们直接跑：否则「浮窗正开着」时所有自检都会静默退出，
+                // 看上去像探针本身坏了，实际是连报告都没生成。
+                LogInfo("Mutex", "诊断探针跳过单实例仲裁");
+            }
+            else if (!created)
             {
                 LogInfo("Mutex", takeover
                     ? "接管失败：旧实例 12 秒内未退出，本次启动放弃"
@@ -435,6 +444,26 @@ namespace PerfOverlay
             if (HasArg(e.Args, "--tray-menu"))
             {
                 RunTrayMenuProbe();
+                return;
+            }
+
+            // ---- PresentMon 列探针：看 msUntilDisplayed 到底有没有值 ----
+            // 自己负责提权（不走下面的 --takeover 重启）：那个路径会顶掉正在运行的浮窗，
+            // 而诊断恰恰多半发生在浮窗正开着的时候。
+            if (HasArg(e.Args, "--pm-cols"))
+            {
+                int secs0 = 8;
+                string sv0 = ArgValue(e.Args, "--pm-cols");
+                if (!string.IsNullOrEmpty(sv0)) { if (!int.TryParse(sv0, out secs0)) secs0 = 8; }
+
+                if (!PrivilegeHelper.IsElevated && !HasArg(e.Args, "--elevated-attempt"))
+                {
+                    PrivilegeHelper.RestartElevated("--pm-cols " + secs0 + " --elevated-attempt");
+                    Shutdown(0);
+                    return;
+                }
+
+                Shutdown(Services.PmColsProbe.Run(secs0));
                 return;
             }
 
@@ -982,7 +1011,36 @@ namespace PerfOverlay
             // 列间要有实际空隙：贴在一起就等于没有分栏
             double colGapDip = mbRect[leftCol].Left - mbRect[0].Right;
             bool colsApart = colGapDip >= 8.0;
-            bool metricsOk = colA && colB && rowsTied && colsApart && textFits;
+
+            // 行距必须处处相同。只断言「列内左对齐 + 同行顶对齐」抓不到这个：
+            // 某一项少写一个 Margin，它只会让**下面那一项**贴上来，横向坐标一个都不变。
+            // 这里逐段量相邻行的 Top 差，左右两列各自内部比一次，两列之间再比一次。
+            bool rowsEven = true;
+            var gapDetail = new StringBuilder();
+            double gapA = mbRect[1].Top - mbRect[0].Top;
+            double gapB = mbRect[leftCol + 1].Top - mbRect[leftCol].Top;
+            gapDetail.AppendFormat("左 {0:0.0} / 右 {1:0.0}", gapA, gapB);
+            for (int i = 0; i < leftCol - 1; i++)
+            {
+                double g = mbRect[i + 1].Top - mbRect[i].Top;
+                if (Math.Abs(g - gapA) > 0.5)
+                {
+                    rowsEven = false;
+                    gapDetail.AppendFormat(" 左列第{0}段={1:0.0}", i + 1, g);
+                }
+            }
+            for (int i = leftCol; i < mbRect.Length - 1; i++)
+            {
+                double g = mbRect[i + 1].Top - mbRect[i].Top;
+                if (Math.Abs(g - gapB) > 0.5)
+                {
+                    rowsEven = false;
+                    gapDetail.AppendFormat(" 右列第{0}段={1:0.0}", i - leftCol + 1, g);
+                }
+            }
+            if (Math.Abs(gapA - gapB) > 0.5) rowsEven = false;
+
+            bool metricsOk = colA && colB && rowsTied && colsApart && rowsEven && textFits;
             if (!metricsOk) fails++;
 
             sb.AppendLine("== 设置面板 ==");
@@ -1015,8 +1073,9 @@ namespace PerfOverlay
             sb.AppendLine(string.Format("   主题三档  = 同行 {0} / 未被压窄 {1} / 不越右界 {2}（右端 {3:0.0} ≤ {4:0.0}）=> {5}",
                 themeSameRow ? "OK" : "FAIL", themeFits ? "OK" : "FAIL", themeInside ? "OK" : "FAIL",
                 themeRightEdge, appearanceRight, themeOk ? "OK" : "FAIL" + themeDetail));
-            sb.AppendLine(string.Format("   显示项目两列 = 左列对齐 {0} / 右列对齐 {1} / 同行顶对齐 {2} / 列间 {3:0.0} DIP / 文字够 {4} => {5}",
+            sb.AppendLine(string.Format("   显示项目两列 = 左列对齐 {0} / 右列对齐 {1} / 同行顶对齐 {2} / 行距一致 {3}({4}) / 列间 {5:0.0} DIP / 文字够 {6} => {7}",
                 colA ? "OK" : "FAIL", colB ? "OK" : "FAIL", rowsTied ? "OK" : "FAIL",
+                rowsEven ? "OK" : "FAIL", gapDetail,
                 colGapDip, textFits ? "OK" : "FAIL", metricsOk ? "OK" : "FAIL"));
             if (!textFits && tight.Length > 0) sb.AppendLine("     放不下：" + tight.ToString().Trim());
 
@@ -1771,6 +1830,26 @@ namespace PerfOverlay
                 if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase)) return true;
             }
             return false;
+        }
+
+        /// <summary>
+        /// 不建窗口、不占托盘、跑完就退的探针。它们不该被「已有实例在运行」挡掉：
+        /// 自检时浮窗通常正开着，一挡就变成静默退出、连报告都不生成，看起来像探针坏了。
+        /// </summary>
+        private static bool IsWindowlessProbe(string[] args)
+        {
+            return HasArg(args, "--pm-cols")
+                || HasArg(args, "--latency-test")
+                || HasArg(args, "--replay")
+                || HasArg(args, "--selftest")
+                || HasArg(args, "--measure")
+                || HasArg(args, "--measure-settings")
+                || HasArg(args, "--theme-probe")
+                || HasArg(args, "--tray-icon-test")
+                || HasArg(args, "--hotkey-test")
+                || HasArg(args, "--shot")
+                || HasArg(args, "--readme-shot")
+                || HasArg(args, "--clean-etw");
         }
 
         /// <summary>

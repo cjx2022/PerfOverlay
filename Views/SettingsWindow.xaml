@@ -14,6 +14,29 @@
         TextOptions.TextFormattingMode="Ideal">
 
     <Window.Resources>
+        <!-- 提示小圈：给「只对游戏有效」这类口径限制做说明。
+             14 DIP，与温度那个感叹号同尺寸，不抢布局也不改变行的基线；
+             颜色用中性 hint 色，hover 才转强调色 —— 它不是警告，只是说明。 -->
+        <Style x:Key="InfoTip" TargetType="Border">
+            <Setter Property="Width" Value="14" />
+            <Setter Property="Height" Value="14" />
+            <Setter Property="Margin" Value="4,0,0,0" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="HorizontalAlignment" Value="Left" />
+            <Setter Property="CornerRadius" Value="7" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TextHint}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Cursor" Value="Help" />
+            <Setter Property="ToolTipService.InitialShowDelay" Value="150" />
+            <Setter Property="ToolTipService.ShowDuration" Value="20000" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="BorderBrush" Value="{DynamicResource Accent}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
         <!-- 温度项旁边的感叹号：只在「该装驱动」或「缺管理员」时出现，
              14 DIP 的小圆点，不抢布局、不改变行的基线。 -->
         <Style x:Key="TempWarn" TargetType="Button">
@@ -169,16 +192,39 @@
                             <CheckBox x:Name="ChkLow" Grid.Row="3" Grid.Column="0"
                                       Style="{StaticResource Switch}" Content="1% Low"
                                       ToolTip="最近 10 秒最差 1% 帧的平均帧率"
+                                      Margin="0,0,0,10"
                                       Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
 
                             <!-- 显示延迟：默认关。取数走 PresentMon 的 ETW，
                                  不依赖任何显卡厂商 SDK，NVIDIA / AMD / Intel 通用；
                                  但独立翻转、覆盖层、Electron 这类路径追不到显示环节，
-                                 开着会看到空值，所以不放进默认开启的几项里。 -->
-                            <CheckBox x:Name="ChkLatency" Grid.Row="4" Grid.Column="0"
-                                      Style="{StaticResource Switch}" Content="显示延迟"
-                                      ToolTip="Present 调用到画面真正出现在屏幕上的毫秒数（中位数）。&#10;不依赖显卡厂商，A/N/I 通用；部分渲染路径追踪不到显示环节，此时显示 --"
-                                      Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
+                                 开着会看到空值，所以不放进默认开启的几项里。
+                                 旁边那个小圈点明这件事：只有游戏拿得到数。 -->
+                            <StackPanel Grid.Row="4" Grid.Column="0" Orientation="Horizontal">
+                                <CheckBox x:Name="ChkLatency"
+                                          Style="{StaticResource Switch}" Content="显示延迟"
+                                          ToolTip="Present 调用到画面真正出现在屏幕上的毫秒数（中位数）"
+                                          Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
+                                <Border Style="{StaticResource InfoTip}">
+                                    <TextBlock Text="i" FontSize="9" FontWeight="Bold"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"
+                                               Foreground="{DynamicResource TextHint}" />
+                                    <Border.ToolTip>
+                                        <ToolTip MaxWidth="330">
+                                            <StackPanel>
+                                                <TextBlock Text="只在游戏里拿得到" FontWeight="SemiBold" Margin="0,0,0,4" />
+                                                <TextBlock TextWrapping="Wrap"
+                                                           Text="量的是 Present 调用到画面扫上屏幕的时间。只有渲染路径允许追踪显示环节时才有值：&#10;· 有数：独占全屏 / 无边框全屏的游戏、部分本地播放器&#10;· 无数：浏览器（含网页视频）、Electron 应用、窗口化播放 —— 这些走 DirectComposition，系统不上报出屏时刻，会一直显示 --" />
+                                                <TextBlock Text="体感参考（中位数）" FontWeight="SemiBold" Margin="0,8,0,4" />
+                                                <TextBlock TextWrapping="Wrap"
+                                                           Text="· ≤ 8 ms　几乎无感&#10;· 8–17 ms　顺畅（60Hz 一帧约 16.7 ms）&#10;· 17–33 ms　轻微发钝，快速转视角能察觉&#10;· 33–50 ms　明显拖手&#10;· &gt; 50 ms　卡顿可感知" />
+                                                <TextBlock TextWrapping="Wrap" Margin="0,8,0,0" Opacity="0.75"
+                                                           Text="这是出屏延迟，不含鼠标/手柄到游戏引擎的那一段；跟 NVIDIA Reflex 的端到端数字不能直接比。" />
+                                            </StackPanel>
+                                        </ToolTip>
+                                    </Border.ToolTip>
+                                </Border>
+                            </StackPanel>
 
                             <!-- 第二列：显存 / 时间 / GPU / CT / GT（默认关闭的都在这一列） -->
                             <CheckBox x:Name="ChkVram" Grid.Row="0" Grid.Column="2"

@@ -250,10 +250,13 @@ namespace PerfOverlay.Services
         {
             lock (_gate)
             {
-                if (pid != _targetPid)
+                string n = name ?? "";
+                // 名字也要参与判断：只按 pid 判断会出现「pid 没变、名字从空变成可读」
+                // 时永远不更新 —— 而空名字会让同名进程回落整条失效，帧数就永远 N/A。
+                if (pid != _targetPid || n.Length > 0 && n != _targetName)
                 {
                     _targetPid = pid;
-                    _targetName = name ?? "";
+                    _targetName = n;
                 }
             }
         }
@@ -542,6 +545,14 @@ namespace PerfOverlay.Services
                     string app = TrimQuotes(line, appStart, appLen);
                     if (app.Length > 0) _appNameOf[pid] = app;
                 }
+                // 目标进程名自带兜底：系统接口读不到名字时（进程刚起来、权限瞬态不足），
+                // 用 CSV 的 Application 列补上 —— 这是唯一可靠的来源，缺了它
+                // 「同名进程回落」整条失效，Chromium 系应用的帧数会一直是 N/A。
+                if (pid == _targetPid && _targetName.Length == 0 && appLen > 0)
+                {
+                    string app2 = TrimQuotes(line, appStart, appLen);
+                    if (app2.Length > 0) _targetName = app2;
+                }
                 _lastWallOf[pid] = _lastFrameWall;
 
                 Dictionary<ulong, FrameQueue> perChain;
@@ -780,7 +791,7 @@ namespace PerfOverlay.Services
                         else
                         {
                             snap.LatencyMessage = _delayScratch.Count == 0
-                                ? "这段画面追踪不到显示环节"
+                                ? "这段画面追踪不到显示环节（浏览器 / 窗口化播放普遍如此，游戏才拿得到）"
                                 : "采样中";
                         }
                     }

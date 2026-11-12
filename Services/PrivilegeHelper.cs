@@ -145,21 +145,65 @@ namespace PerfOverlay.Services
         {
             if (pid <= 0) return "";
             if (pid == _cachedPid) return _cachedName;
+
+            string name = NameViaDotNet(pid);
+            if (name.Length == 0) name = NameViaWin32(pid);   // 第一条路失败再走 Win32
+
+            if (name.Length == 0) return "";                  // 读到空就别进缓存
+            _cachedPid = pid;
+            _cachedName = name;
+            return name;
+        }
+
+        /// <summary>常规路径：Process.GetProcessById().ProcessName，拿不到会抛异常。</summary>
+        private static string NameViaDotNet(int pid)
+        {
             try
             {
-                string name;
-                using (var p = Process.GetProcessById(pid)) name = p.ProcessName;
-                _cachedPid = pid;
-                _cachedName = name;
-                return name;
+                using (var p = Process.GetProcessById(pid)) return p.ProcessName ?? "";
             }
-            catch (Exception)
+            catch (Exception) { return ""; }
+        }
+
+        /// <summary>
+        /// 兜底路径：OpenProcess + QueryFullProcessImageName。
+        /// PROCESS_QUERY_LIMITED_INFORMATION 对同用户进程基本都给，比 .NET 那条稳；
+        /// 而且名字直接取自镜像文件名，不需要额外权限。
+        /// </summary>
+        private static string NameViaWin32(int pid)
+        {
+            IntPtr h = IntPtr.Zero;
+            try
             {
-                _cachedPid = pid;
-                _cachedName = "";
-                return "";
+                h = OpenProcess(0x1000 /*PROCESS_QUERY_LIMITED_INFORMATION*/, false, pid);
+                if (h == IntPtr.Zero) return "";
+                var sb = new StringBuilder(1024);
+                int cap = sb.Capacity;
+                if (!QueryFullProcessImageNameW(h, 0, sb, ref cap)) return "";
+                string path = sb.ToString(0, cap);
+                if (path.Length == 0) return "";
+                string file = path.Substring(path.LastIndexOf('\\') + 1);
+                // 去掉 .exe，跟 Process.ProcessName 的口径一致
+                if (file.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                    file = file.Substring(0, file.Length - 4);
+                return file;
+            }
+            catch (Exception) { return ""; }
+            finally
+            {
+                if (h != IntPtr.Zero) CloseHandle(h);
             }
         }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr OpenProcess(uint access, bool inheritHandle, int pid);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool QueryFullProcessImageNameW(IntPtr hProcess, int flags,
+                                                              StringBuilder exeName, ref int size);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr handle);
 
         public static string WindowTitleOf(IntPtr hWnd)
         {
