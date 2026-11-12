@@ -34,6 +34,8 @@ namespace PerfOverlay
         private Icon _trayIconDark;
         // 上一次实际用的那套（true = 深色），用来避免同一状态下重复赋值
         private bool _trayIconDarkActive;
+        // 托盘配色轮询：系统事件不可靠，2 秒对一次注册表
+        private DispatcherTimer _trayThemeWatch;
 
         private DispatcherTimer _saveTimer;
         private DispatcherTimer _hideTrimTimer;
@@ -254,6 +256,56 @@ namespace PerfOverlay
                 return;
             }
 
+            // ---- ETW 清理的 SYSTEM 执行端 ----
+            // 只由 --clean-etw 建的一次性计划任务拉起。RtBackup 的 DACL 连管理员都不放行，
+            // 必须以 SYSTEM 身份才能删，这一段就是那个"身份"里跑的逻辑。
+            if (HasArg(e.Args, "--clean-etw-system"))
+            {
+                int sysCode = 2;
+                try
+                {
+                    var sr = EtwCleaner.CleanDirect(true, false);
+                    string text = EtwCleaner.Format(sr);
+                    string reportPath = ArgValue(e.Args, "--etw-report");
+                    if (!string.IsNullOrEmpty(reportPath))
+                        File.WriteAllText(reportPath, text, Encoding.UTF8);
+                    WriteLog("INF", "EtwCleanSys", text.Replace(Environment.NewLine, " | "));
+                    sysCode = sr.Ok ? 0 : 2;
+                }
+                catch (Exception ex) { LogError("EtwCleanSys", ex); }
+                Shutdown(sysCode);
+                return;
+            }
+
+            // ---- ETW 残留清理：清 RtBackup 备份文件与残留会话（需要管理员）----
+            // 这个分支必须在下面的「自动提权」之前：它自己负责提权，
+            // 而且提权重启时会重建参数，交给后面的流程反而会变成正常启动。
+            if (HasArg(e.Args, "--clean-etw"))
+            {
+                WriteLog("INF", "EtwClean", "enter clean-etw  elevated=" + PrivilegeHelper.IsElevated
+                                            + " attempt=" + HasArg(e.Args, "--elevated-attempt"));
+                if (!PrivilegeHelper.IsElevated && !HasArg(e.Args, "--elevated-attempt"))
+                {
+                    string elevErr0 = PrivilegeHelper.RestartElevated("--clean-etw --elevated-attempt");
+                    WriteLog("INF", "EtwClean", "relaunch elevated result=" + (elevErr0 ?? "ok"));
+                    Shutdown(elevErr0 == null ? 0 : 2);
+                    return;
+                }
+
+                int cleanCode = 2;
+                try
+                {
+                    var clr = EtwCleaner.Run(true);
+                    string rep = EtwCleaner.Format(clr);
+                    File.WriteAllText(Path.Combine(Path.GetTempPath(), "perfoverlay-etw-clean.txt"), rep, Encoding.UTF8);
+                    WriteLog("INF", "EtwClean", rep.Replace(Environment.NewLine, " | "));
+                    cleanCode = clr.Ok ? 0 : 2;
+                }
+                catch (Exception ex) { LogError("EtwClean", ex); }
+                Shutdown(cleanCode);
+                return;
+            }
+
             // ---- 温度组件安装：下载 + 校验 + 静默安装（等价于点面板上的感叹号）----
             if (HasArg(e.Args, "--pawnio-install"))
             {
@@ -274,7 +326,8 @@ namespace PerfOverlay
             bool uiProbe = HasArg(e.Args, "--open-settings") || HasArg(e.Args, "--open-menu")
                            || HasArg(e.Args, "--pawnio-status") || HasArg(e.Args, "--pawnio-install")
                            || HasArg(e.Args, "--theme-probe") || HasArg(e.Args, "--tray-menu")
-                           || HasArg(e.Args, "--tray-icon-test");
+                           || HasArg(e.Args, "--tray-icon-test")
+                           || HasArg(e.Args, "--clean-etw-system");
             if (!PrivilegeHelper.IsElevated
                 && !uiProbe
                 && !HasArg(e.Args, "--noelevate")
@@ -436,6 +489,10 @@ namespace PerfOverlay
             HookSystemTheme();
             InitHotkey();
             _host.Start(_settings);
+
+            // 兜底回收：强杀/断电会留下 ETW 备份文件，攒到 GB 级只会让帧数变 N/A。
+            // 延迟 25 秒在后台跑，只在超过 256 MB 时动手，删不掉的不算失败。
+            EtwCleaner.AutoRunInBackground(m => WriteLog("INF", "EtwClean", m));
 
             // ---- UI 探针：仅供截图核对，正常启动不走这里（静默：窗口放屏幕外，不抢焦点）----
             if (HasArg(e.Args, "--open-settings")) ShowSettings(true);
@@ -2167,10 +2224,23 @@ namespace PerfOverlay
         /// 监听系统主题变化：任务栏配色一改就换图标；主题设成 auto 时
         /// 面板也跟着重刷（0.9.6 之前只有启动那一刻读一次，切系统主题得重启程序）。
         /// 事件在后台线程触发，动手前一律回 UI 线程。
+        ///
+        /// 光靠 SystemEvents 不够：WPF 里这条通知依赖隐藏窗口的消息泵，
+        /// 任务栏配色变化有时根本不发 UserPreferenceChanged（实测切「系统模式」
+        /// 在部分机器上收不到），表现就是「图标不跟随」。
+        /// 所以另起一个 2 秒轮询兜底——读一个注册表值而已，代价可以忽略。
         /// </summary>
         private void HookSystemTheme()
         {
             try { Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged; }
+            catch (Exception) { }
+
+            try
+            {
+                _trayThemeWatch = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+                _trayThemeWatch.Tick += (s, a) => RefreshTrayIcon();
+                _trayThemeWatch.Start();
+            }
             catch (Exception) { }
         }
 

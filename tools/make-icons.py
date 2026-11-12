@@ -1,111 +1,116 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""把两张 AI 出的 logo（浅色/深色）加工成程序用的图标。
+"""生成程序图标（纯程序化，不依赖任何外部图片）。
 
-做三件事：
-1. 抠白底 —— 只抠「与画布边缘连通」的近白像素，卡片内部浅色区域不受影响。
-2. 按内容包围盒裁切 + 统一留白 —— 两版用同一个包围盒，切换主题时视觉尺寸不跳。
-3. 出 PNG（各种尺寸）+ 多尺寸 ICO（16/24/32/48/64/128/256）。
+产物：
+  assets/PerfOverlay-light.ico  给浅色任务栏用（深蓝底）
+  assets/PerfOverlay-dark.ico   给深色任务栏用（亮蓝底）
+  app.ico                       exe 主图标（= 浅色版）
 
 用法：python tools/make-icons.py
 """
 import os
 import sys
-from PIL import Image, ImageDraw, ImageFilter, ImageEnhance
+
+from PIL import Image, ImageDraw
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 OUT = os.path.join(ROOT, "assets")
-SRC = {
-    "light": r"C:\Users\bill\.workbuddy\clipboard-images\clipboard-2026-11-12T15-46-23-173Z-4fdfbbbd.jpg",
-    "dark": r"C:\Users\bill\.workbuddy\clipboard-images\clipboard-2026-11-12T15-46-23-175Z-ea6e3af5.jpg",
-}
 ICO_SIZES = [16, 24, 32, 48, 64, 128, 256]
-WHITE_CUT = 236      # 三通道都 >= 这个值才当作背景白
+
+# ----------------------------------------------------------------------
+# 图标：圆角色块 + 从左下升到右上的白折线
+#
+# 早期用过 AI 出的设计稿（浅蓝卡片 + 网格 + 折线 + 数字标注），256 上好看，
+# 但缩到 16/24 就是一片灰：网格和数字占掉大半像素，折线只剩 1px。任务栏显示
+# 的恰恰是 16~24，那一版等于白做。所以改成程序化绘制，三步保证小尺寸清楚：
+#   1. 折线跨度拉满 —— 起点贴左下、终点贴右上，斜率够大才看得出趋势；
+#   2. 折点数随尺寸递减 —— 16px 只画 1 个肘部，64px 以上才画完整波动；
+#   3. 抗锯齿遮罩做硬化 —— 下采样后的半透明边不发灰，线宽不会被啃细。
+# ----------------------------------------------------------------------
+BG_FOR_LIGHT_TASKBAR = (25, 102, 210)    # #1966D2，压在浅灰任务栏上对比 6:1
+BG_FOR_DARK_TASKBAR = (47, 123, 255)     # #2F7BFF，压在深色任务栏上对比 4:1
+WHITE = (255, 255, 255)
+SUPERSAMPLE = 8                          # 16px 也是 128×128 画，边缘才够平
+
+# 折线端点：左下 (60) -> 右上 (165)。斜度大，缩到 16px 也是一条明确的上升线。
+# 折点表按尺寸分组：小尺寸少折点，否则折角糊在一起反而像一根粗斜线。
+#
+# 中间折点必须**离开首尾连线**，否则三点共线，16px 上就退化成斜杠。
+# 小尺寸取「前段近乎平走、后段陡升」：两段夹角 ~45°，肘部法向偏移在 16px 上
+# 约 3px（线宽才 2px），所以缩到任务栏也是「折线」而不是「一根斜杠」。
+# 端点留 0.155/0.845 的内边距：线宽一半约 0.065，贴太紧会被圆角啃掉。
+LINE_SMALL = [(0.135, 0.845), (0.535, 0.735), (0.865, 0.155)]    # 16/24：一个肘部
+LINE_MID = [(0.145, 0.855), (0.360, 0.600), (0.580, 0.700), (0.855, 0.145)]  # 32/48
+LINE_LARGE = [(0.135, 0.865), (0.300, 0.635), (0.455, 0.690),
+              (0.615, 0.455), (0.775, 0.520), (0.865, 0.135)]    # 64 以上：完整波动
 
 
-def cut_background(src_path):
-    """抠掉与边缘连通的近白背景，返回 RGBA。
+def line_points(size):
+    if size <= 24:
+        return LINE_SMALL
+    if size <= 48:
+        return LINE_MID
+    return LINE_LARGE
 
-    关键：alpha 由**连通性**决定，不由颜色深浅决定。
-    卡片外框本身就是接近纯白的（#F0F6FC 这种），按「越白越透明」算会把它做成半透明，
-    叠到深色任务栏上就成了一圈灰斑。所以这里只把 floodfill 连通到的背景判为透明，
-    其余像素一律不透明，最后整体羽化 1px 让边缘柔和。
+
+def harden(mask):
+    """把抗锯齿的软边收紧：覆盖度 >0.66 判纯白、<0.34 判无，中间线性。
+
+    不收紧的话，白线在蓝底上下采样出来那圈半透明像素会显示成灰色，
+    16px 上等于给线包了一层灰边，宽度也被啃掉三分之一。
     """
-    im = Image.open(src_path).convert("RGB")
-    w, h = im.size
-
-    marked = im.copy()
-    for seed in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]:
-        ImageDraw.floodfill(marked, seed, (255, 0, 255), thresh=14)
-
-    out = im.convert("RGBA")
-    px_src = im.load()
-    px_mk = marked.load()
-    px = out.load()
-    for y in range(h):
-        for x in range(w):
-            r, g, b = px_mk[x, y]
-            if r > 200 and g < 60 and b > 200:
-                px[x, y] = (0, 0, 0, 0)
-            else:
-                sr, sg, sb = px_src[x, y]
-                px[x, y] = (sr, sg, sb, 255)
-
-    alpha = out.getchannel("A").filter(ImageFilter.GaussianBlur(0.9))
-    out.putalpha(alpha)
-    return out
+    lut = []
+    for i in range(256):
+        v = (i / 255.0 - 0.34) / 0.32
+        v = 0.0 if v < 0 else (1.0 if v > 1 else v)
+        lut.append(int(round(v * 255)))
+    return mask.point(lut)
 
 
-def bbox_union(images):
-    box = None
-    for im in images:
-        b = im.getbbox()
-        if b is None:
-            continue
-        if box is None:
-            box = list(b)
-        else:
-            box[0] = min(box[0], b[0])
-            box[1] = min(box[1], b[1])
-            box[2] = max(box[2], b[2])
-            box[3] = max(box[3], b[3])
-    return tuple(box)
+def render(size, bg):
+    """画一张 size×size 的图标。"""
+    big = size * SUPERSAMPLE
+
+    # 底块也在超采样尺度上画：直接按目标尺寸画圆角，16px 下会缺角
+    # （PIL 的 rounded_rectangle 在半径小于 3px 时角部不精确）。
+    base = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    ImageDraw.Draw(base).rounded_rectangle(
+        [0, 0, big - 1, big - 1], radius=int(round(big * 0.22)), fill=bg + (255,))
+    base = base.resize((size, size), Image.LANCZOS)
+
+    # 前景单独画在透明层上再叠底：直接在底色上画，下采样的半透明边
+    # 会和蓝底混出一圈灰，16px 上特别明显。
+    fg = Image.new("L", (big, big), 0)
+    fd = ImageDraw.Draw(fg)
+    pts = [(x * big, y * big) for x, y in line_points(size)]
+    # 线宽下限 2.1px：16px 再细就只剩一条虚影；小尺寸再抬一档，
+    # 因为硬化会啃掉边缘半圈，实际视觉宽度比设定值窄。
+    coef = 0.130 if size <= 24 else 0.115
+    width = max(2.1, size * coef) * SUPERSAMPLE
+    fd.line(pts, fill=255, width=int(round(width)), joint="curve")
+    for p in (pts[0], pts[-1]):          # 线头补圆，避免端点切成斜角
+        rr = width / 2.0
+        fd.ellipse([p[0] - rr, p[1] - rr, p[0] + rr, p[1] + rr], fill=255)
+
+    fg = harden(fg.resize((size, size), Image.LANCZOS))
+
+    im = base
+    im.paste(Image.new("RGBA", (size, size), WHITE + (255,)), (0, 0), fg)
+    return im
 
 
 def main():
     if not os.path.isdir(OUT):
         os.makedirs(OUT)
 
-    cut = {k: cut_background(v) for k, v in SRC.items()}
-    box = bbox_union(cut.values())
-    # 两边都是正方形内容，取并集后补成正方形，再加 3% 留白
-    side = max(box[2] - box[0], box[3] - box[1])
-    pad = int(side * 0.03)
-    side += pad * 2
-    cx = (box[0] + box[2]) // 2
-    cy = (box[1] + box[3]) // 2
-    sq = (cx - side // 2, cy - side // 2, cx + side // 2, cy + side // 2)
-    print("bbox", box, "-> square", sq, "side", side)
-
-    master = {}
-    for k, im in cut.items():
-        canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
-        canvas.paste(im.crop(sq), (0, 0))
-        master[k] = canvas
-        # 源图只留 512 那版：够以后重新导尺寸，又不会把仓库撑到几 MB
-        canvas.resize((512, 512), Image.LANCZOS).save(os.path.join(OUT, "logo-%s.png" % k))
-
-    for k, im in master.items():
-        frames = {}
-        for s in ICO_SIZES:
-            small = im.resize((s, s), Image.LANCZOS)
-            if s <= 32:
-                # 插画缩到 32px 以下细节会糊成一片，稍微提饱和 + 锐化，
-                # 让折线还能从背景里跳出来。只加这一点，不改构图。
-                small = ImageEnhance.Color(small).enhance(1.15)
-                small = small.filter(ImageFilter.UnsharpMask(radius=1.0, percent=60, threshold=2))
-            frames[s] = small
+    variants = {
+        "light": BG_FOR_LIGHT_TASKBAR,   # 名字是「给哪套任务栏用」，不是图标颜色
+        "dark": BG_FOR_DARK_TASKBAR,
+    }
+    for k, bg in variants.items():
+        frames = {s: render(s, bg) for s in ICO_SIZES}
         ico = os.path.join(OUT, "PerfOverlay-%s.ico" % k)
         frames[256].save(ico, format="ICO",
                          sizes=[(s, s) for s in ICO_SIZES],
