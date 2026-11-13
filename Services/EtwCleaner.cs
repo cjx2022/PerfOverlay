@@ -276,32 +276,108 @@ namespace PerfOverlay.Services
             return r;
         }
 
-        /// <summary>从 logman 的会话列表里挑出本程序前缀的会话并 stop。</summary>
+        /// <summary>
+        /// **正在使用中的采集会话名**，清理时必须放过。
+        ///
+        /// 名字带 `PerfOverlay` 前缀，与「残留」长得一模一样，光靠前缀分不开。
+        /// 2026-11-13 实测事故：自启动的提权实例建好会话，25 秒后启动兜底把
+        /// `PerfOverlay_b91ce89a15` 当成残留 stop 掉 —— 那正是自己正在用的那个。
+        /// PresentMon 进程还活着、`logman` 里会话没了，stdout 恒 0 行，
+        /// 浮窗永久 N/A（日志：`pmRun=True lines=0 q=(空)`）。
+        /// 由 PresentMonEngine 在 Start/Stop 时维护。
+        /// </summary>
+        public static volatile string ProtectSession = "";
+
+        /// <summary>
+        /// 纯函数：从 `logman query -ets` 的输出里挑出**该停**的会话名。
+        ///
+        /// 三条规则：
+        ///   1. 必须带本程序前缀（`PerfOverlay` / `PerfOverlayCols_` 都算）；
+        ///   2. 正在用的那个（keep）绝不在列 —— 停了它就是把自己掐死；
+        ///   3. 去重、保序。
+        /// 抽成纯函数是为了让 `--selftest` 跑真值表：这种东西靠人眼看着「日志里写了停 1 个」是查不出来的。
+        /// </summary>
+        public static List<string> PickResiduals(IEnumerable<string> logmanLines, string keep)
+        {
+            var names = new List<string>();
+            foreach (var name in ParseSessionNames(logmanLines))
+            {
+                if (!string.IsNullOrEmpty(keep)
+                    && string.Equals(name, keep, StringComparison.OrdinalIgnoreCase)) continue;
+                names.Add(name);
+            }
+            return names;
+        }
+
+        /// <summary>
+        /// 从 `logman query -ets` 的输出里解析出所有本程序前缀的会话名（不分在用/残留）。
+        ///
+        /// 单独拆出来的原因：除了「挑残留来停」，还需要判断**某个具体会话是否还活着**
+        /// （见 SessionExists）。两处必须共用同一套解析，否则「停掉的」和「以为停掉的」
+        /// 会各说各话。表头行「数据收集器集 类型 状态」解析出的词不带前缀，自然被过滤。
+        /// </summary>
+        public static List<string> ParseSessionNames(IEnumerable<string> logmanLines)
+        {
+            var names = new List<string>();
+            if (logmanLines == null) return names;
+            foreach (var raw in logmanLines)
+            {
+                if (raw == null) continue;
+                string line = raw.Trim('\r', ' ', '\t');
+                if (line.Length == 0 || line[0] == '-') continue;
+                // 会话名是第一列
+                int sp = line.IndexOfAny(Separators);
+                string name = sp > 0 ? line.Substring(0, sp) : line;
+                if (!name.StartsWith(SessionPrefix, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!names.Contains(name)) names.Add(name);
+            }
+            return names;
+        }
+
+        private static readonly char[] Separators = { ' ', '\t' };
+
+        /// <summary>
+        /// 指定会话是否仍在运行。
+        ///
+        /// 重建采集时**必须**等到旧会话真的消失再起新的：旧会话收尾期间新会话能建起来，
+        /// 也能出几秒数据，旧会话一断，事件路由就断在那里 —— 用户看到的现象正是
+        /// 「恢复了几秒又没了」。所以 Stop 之后要能问一句「它还在吗」。
+        ///
+        /// 查询失败（logman 不可用）时返回 false：宁可当作已消失，也不要卡在等待里。
+        /// </summary>
+        public static bool SessionExists(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            string text = RunCapture("logman", "query -ets", 8000);
+            if (string.IsNullOrEmpty(text)) return false;
+            foreach (var n in ParseSessionNames(text.Split('\n')))
+            {
+                if (string.Equals(n, name, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            return false;
+        }
+
+        /// <summary>按名字停掉一条会话。成功（或本来就不存在）返回 true。</summary>
+        public static bool StopSession(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return true;
+            string outp = RunCapture("logman", "stop \"" + name + "\" -ets", 8000);
+            if (string.IsNullOrEmpty(outp)) return false;
+            return outp.IndexOf("找不到", StringComparison.Ordinal) < 0
+                && outp.IndexOf("错误", StringComparison.Ordinal) < 0;
+        }
+
+        /// <summary>从 logman 的会话列表里挑出本程序前缀的会话并 stop（当前会话除外）。</summary>
         public static void StopResidualSessions(List<string> stopped)
         {
             string text = RunCapture("logman", "query -ets", 8000);
             if (string.IsNullOrEmpty(text)) return;
 
-            var names = new List<string>();
-            foreach (var raw in text.Split('\n'))
-            {
-                string line = raw.Trim('\r', ' ', '\t');
-                if (line.Length == 0 || line[0] == '-') continue;
-                int sp = line.IndexOfAny(new[] { ' ', '\t' });
-                string name = sp > 0 ? line.Substring(0, sp) : line;
-                if (!name.StartsWith(SessionPrefix, StringComparison.OrdinalIgnoreCase)) continue;
-                if (!names.Contains(name)) names.Add(name);
-            }
+            var names = PickResiduals(text.Split('\n'), ProtectSession);
 
             foreach (var name in names)
             {
-                string outp = RunCapture("logman", "stop \"" + name + "\" -ets", 8000);
-                if (!string.IsNullOrEmpty(outp)
-                    && outp.IndexOf("找不到", StringComparison.Ordinal) < 0
-                    && outp.IndexOf("错误", StringComparison.Ordinal) < 0)
-                {
-                    stopped.Add(name);
-                }
+                if (StopSession(name)) stopped.Add(name);
             }
         }
 
@@ -357,6 +433,8 @@ namespace PerfOverlay.Services
                     StopResidualSessions(stopped);
                     if (stopped.Count > 0 && log != null)
                         log("启动兜底：停掉残留 ETW 会话 " + stopped.Count + " 个 [" + string.Join(", ", stopped.ToArray()) + "]");
+                    else if (log != null && !string.IsNullOrEmpty(ProtectSession))
+                        log("启动兜底：无需清理（当前采集会话 " + ProtectSession + " 保留）");
 
                     int files; long bytes; string err;
                     Stat(out files, out bytes, out err);

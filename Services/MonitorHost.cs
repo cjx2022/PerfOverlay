@@ -109,8 +109,74 @@ namespace PerfOverlay.Services
 
         private bool _framesStarted;
         private string _framesWhy = "";
-        private DateTime _starvedSince = DateTime.MinValue;
         private readonly int _selfPid = System.Diagnostics.Process.GetCurrentProcess().Id;
+
+        // ==================================================================
+        // 采集自恢复（0.9.10）
+        //
+        // 原来的两条自愈各管一半：EnsureFramesAlive 只管「进程还在不在」，
+        // RecycleIfStarved 只在「进程活着但队列 60 秒无帧」时重建一次。两个都没管到
+        // 真正最常见的故障：**进程活着、会话被顶掉、stdout 恒 0 行**（lines=0），
+        // 而且重建一次不成功就再等 60 秒，用户看到的是「长期 --」。
+        //
+        // 现在统一成一个健康监视器，判定依据是 **PresentMon 的 stdout 有没有新行**，
+        // 而不是「当前画面有没有帧」—— 后者在桌面静止时本来就该是 0，拿它当故障证据
+        // 会让人在空闲时反复重建会话。
+        //
+        //   lines=0 且启动超过 8 秒        → 会话没建起来（被占/被拦/被顶）→ 重建
+        //   lines>0 但 30 秒没新行，且本次出过帧 → 会话僵死 → 重建
+        //   lines>0 且没新行，但本次没出过帧   → 桌面静止，不动它
+        //   重建后 12 秒内没有新行           → 记一次失败，退避 8/16/32/60 秒重试
+        //
+        // 退避是为了别把「反作弊真的拦住了」变成每 5 秒建一次会话的风暴；
+        // 手动恢复按钮不受退避限制，随时可以强来一次。
+        // ==================================================================
+        private static readonly System.Diagnostics.Stopwatch HealthClock = System.Diagnostics.Stopwatch.StartNew();
+        private static double NowSec() { return HealthClock.Elapsed.TotalSeconds; }
+
+        /// <summary>启动后这么久还一行输出都没有，判定会话没建起来。</summary>
+        private const double NoOutputGraceSeconds = 8;
+        /// <summary>有输出但这么久没新行、且此前确实出过帧 → 判定采集停摆。</summary>
+        private const double StallSeconds = 30;
+        /// <summary>重建后等这么久评估成效（有没有新行）。</summary>
+        private const double RecoverVerdictSeconds = 12;
+
+        private bool _hadFramesThisRun;
+        private long _linesSeen;
+        private double _linesChangedAt = NowSec();
+        private double _lastRecoverAt = -999;
+        private double _pendingAt = double.NaN;
+        private long _pendingLines;
+        private int _recoverFails;
+        private int _recoverCount;
+        private volatile bool _recoveryRequested;
+        private volatile string _health = "starting";
+        private volatile string _healthNote = "";
+
+        /// <summary>
+        /// 采集链路健康状态，给设置面板显示：
+        /// ok / starting / starved / stalled / recovering / exhausted / nopriv / missing。
+        /// 注意它描述的是**采集管道**，不是「当前画面有没有帧」。
+        /// </summary>
+        public string FramesHealth { get { return _health; } }
+
+        /// <summary>健康状态的补充说明（"自动恢复 3 次仍未成功"之类）。</summary>
+        public string FramesHealthNote { get { return _healthNote; } }
+
+        /// <summary>本次运行一共自动恢复了几次。</summary>
+        public int RecoveryCount { get { return _recoverCount; } }
+
+        /// <summary>连续恢复失败次数（有新行就清零）。</summary>
+        public int RecoveryFailures { get { return _recoverFails; } }
+
+        /// <summary>
+        /// 手动恢复：清残留会话 → 停掉当前采集 → 等会话真的消失 → 重建。
+        /// 只置一个标志，真正的动作在采样线程上做（采集对象的生命周期归那条线程管）。
+        /// </summary>
+        public void RequestRecovery()
+        {
+            _recoveryRequested = true;
+        }
 
         /// <summary>
         /// 打开帧采集现场日志（每 5 秒一行）。默认关闭：
@@ -224,6 +290,14 @@ namespace PerfOverlay.Services
                 if (!_framesStarted && Frames.LastError.Length > 0) _framesWhy = Frames.LastError;
             }
 
+            // 健康监视器的起点：从「刚起、还没输出」开始算宽限期，
+            // 否则它会在第一轮就把全新的采集当成故障重建一次。
+            _linesSeen = 0;
+            _linesChangedAt = NowSec();
+            _lastRecoverAt = -999;
+            _pendingAt = double.NaN;
+            _hadFramesThisRun = false;
+
             _stop = false;
             _thread = new Thread(Loop) { IsBackground = true, Name = "PerfOverlay.Sampler" };
             _thread.Start();
@@ -267,18 +341,15 @@ namespace PerfOverlay.Services
                     // 温度 / GPU 利用率：开关关着就什么都不做（连 dll 都不加载）
                     EnsureProbes(s);
 
-                    // PresentMon 进程必须能自愈：它可能因为会话被顶掉、被外部杀掉、
-                    // 或启动瞬间失败而消失。原来的实现只在 Start() 里拉一次，
-                    // 之后进程没了就永远显示 N/A，而且没有任何线索。
-                    if (tick % 10 == 0) EnsureFramesAlive();
-
                     var snap = Build(s);
 
                     // 每 ~5 秒把帧采集现场写一行日志：目标 PID、PresentMon 存活、
                     // 队列里各 PID 的帧数、失败原因。排障全靠这一行。
                     if (tick % 10 == 0) WriteFrameDiag(snap);
 
-                    RecycleIfStarved(snap);
+                    // 采集自愈：进程掉了、会话没建起来、或建起来却不出数，统一走这一个入口。
+                    // 每一轮都过一遍（只是读几个字段），手动恢复按钮才能在最坏 250ms 内生效。
+                    TickFramesHealth(snap);
 
                     var h = Updated;
                     if (h != null)
@@ -796,19 +867,195 @@ namespace PerfOverlay.Services
         }
 
         /// <summary>
-        /// PresentMon 掉了就拉起来，每 5 秒最多试一次（由调用点的 tick 控制）。
+        /// 采集健康监视器：判断当前链路是活着、在起、还是已经停摆，并在必要时重建。
+        ///
+        /// 判定只用三样东西：PresentMon 进程在不在、stdout 有多少行、离上次有新行多久。
+        /// **不**看「用户当前画面有没有帧」—— 桌面静止时那个值本来就该是 0，
+        /// 拿它当故障证据会让人在空闲时反复重建会话（每次重建都要拆一条系统级 ETW 会话）。
         /// </summary>
-        private void EnsureFramesAlive()
+        private void TickFramesHealth(MetricsSnapshot snap)
         {
+            if (!Frames.PresentMonFound)
+            {
+                _recoveryRequested = false;
+                SetHealth("missing", "缺少 PresentMon.exe（程序目录 tools 下）");
+                return;
+            }
+            if (!PrivilegeHelper.CanCaptureFrames)
+            {
+                _recoveryRequested = false;
+                SetHealth("nopriv", "帧数采集需要管理员权限");
+                return;
+            }
+
+            double now = NowSec();
+
+            // 手动恢复：优先级最高，且不受退避限制 —— 用户点了就该立刻动
+            if (_recoveryRequested)
+            {
+                _recoveryRequested = false;
+                _recoverFails = 0;
+                RecoverFrames("手动恢复");
+                return;
+            }
+
+            long lines = Frames.LinesSeen;
+
+            // 上一次重建的成效：12 秒内有新行 = 成功（失败计数清零），没有 = 记一次失败
+            if (!double.IsNaN(_pendingAt) && now - _pendingAt >= RecoverVerdictSeconds)
+            {
+                if (lines > _pendingLines) _recoverFails = 0;
+                else _recoverFails++;
+                _pendingAt = double.NaN;
+            }
+
+            if (lines != _linesSeen)
+            {
+                _linesSeen = lines;
+                _linesChangedAt = now;
+            }
+            if (snap.FrameCount > 0) _hadFramesThisRun = true;
+
+            // 进程本身没了：直接重建（这条不需要任何健康判定）
+            if (!Frames.IsRunning)
+            {
+                if (now - _lastRecoverAt < RecoverBackoffSeconds(_recoverFails))
+                {
+                    SetHealth("recovering", "PresentMon 已退出，等待重试");
+                    return;
+                }
+                RecoverFrames("PresentMon 进程不存在");
+                return;
+            }
+
+            double uptime = Frames.UptimeSeconds;
+            double idle = now - _linesChangedAt;
+            string state = DecideFramesHealth(lines, uptime, idle, _hadFramesThisRun, _recoverFails);
+
+            if (state == "ok")
+            {
+                SetHealth("ok", "");
+                return;
+            }
+
+            string note = state == "starting" ? "采集启动中…"
+                : state == "stalled" ? "采集停摆（长时间没有新帧行）"
+                : state == "exhausted" ? string.Format("自动恢复 {0} 次仍未成功", _recoverFails)
+                : "采集没有任何输出";
+
+            // 健康状态先摆出来，让面板在退避期间也能说明「为什么还没好」
+            SetHealth(state, note);
+
+            double wait = RecoverBackoffSeconds(_recoverFails);
+            if (now - _lastRecoverAt < wait) return;
+
+            RecoverFrames(state == "stalled" ? "采集停摆（长时间无新行）" : "采集没有任何输出");
+        }
+
+        /// <summary>
+        /// 健康判定的纯函数（规则只写这一处，自检直接跑真值表）。
+        ///
+        /// hadFrames 的语义是「本次启动以来确实出过帧」。它守的是「桌面静止」这条误判：
+        /// 没有它，用户看静态网页 30 秒就会被判成停摆，然后白白拆建一次 ETW 会话。
+        /// </summary>
+        internal static string DecideFramesHealth(long lines, double uptimeSeconds,
+                                                  double idleSeconds, bool hadFrames, int fails)
+        {
+            if (lines <= 0)
+            {
+                if (uptimeSeconds < NoOutputGraceSeconds) return "starting";
+                return fails >= 3 ? "exhausted" : "starved";
+            }
+            if (hadFrames && idleSeconds >= StallSeconds) return fails >= 3 ? "exhausted" : "stalled";
+            return "ok";
+        }
+
+        /// <summary>
+        /// 连续失败后的重试间隔：0 / 8 / 16 / 32 / 60 秒（按失败次数翻倍，上限 60）。
+        /// 第一次永远立刻做（用户刚出问题时不该再等）。
+        /// </summary>
+        internal static double RecoverBackoffSeconds(int fails)
+        {
+            if (fails <= 0) return 0;
+            int steps = Math.Min(fails, 4);
+            double s = 8 * Math.Pow(2, steps - 1);
+            return s > 60 ? 60 : s;
+        }
+
+        private void SetHealth(string state, string note)
+        {
+            string old = _health;
+            if (old == state && _healthNote == note) return;
+            _health = state;
+            _healthNote = note;
+            if (old != state)
+            {
+                var t = Trace;
+                if (t != null)
+                {
+                    try { t("采集状态：" + state + (note.Length > 0 ? "（" + note + "）" : "")); }
+                    catch (Exception) { }
+                }
+            }
+        }
+
+        /// <summary>
+        /// 重建帧采集。顺序是有讲究的，顺序错了就会「恢复了几秒又没了」：
+        ///
+        ///   1) Frames.Stop()        —— 杀进程，并**等它那条 ETW 会话真的从系统里消失**
+        ///                              （PresentMonEngine.Stop 内部轮询 logman 确认）；
+        ///   2) ClearResidualSessions —— 顺手收掉别的残留（探针留下的、上次崩溃没回收的）；
+        ///   3) 停 200ms 再 Start    —— 给内核留出彻底回收的窗口。
+        ///
+        /// 早先是 Kill 完立刻 Start：新会话能建起来、也能出几秒数据，旧会话一收尾，
+        /// 事件路由就断在那里 —— 现场看到的就是「好了几秒又没了」。
+        /// </summary>
+        private void RecoverFrames(string reason)
+        {
+            double now = NowSec();
+
+            // 先把上一次重建的账结掉：这一次重建本身就说明「上次没救活」（或者救活过又掉了）。
+            // 必须在 Stop 之前算 —— Stop 会把 LinesSeen 和进程寿命一起清零。
+            //
+            // 不结账会有一个隐蔽的死循环：每次重建都重置「启动宽限期」，8 秒后的下一轮
+            // 永远落在宽限期里，失败计数永远停在 0，退避也就永远不生效 —— 结果是每 8 秒
+            // 拆建一次会话，一次不成功就永远循环下去，永远到不了「交给手动恢复」。
+            if (!double.IsNaN(_pendingAt))
+            {
+                if (Frames.LinesSeen > _pendingLines) _recoverFails = 0;
+                else _recoverFails++;
+                _pendingAt = double.NaN;
+            }
+
+            _lastRecoverAt = now;
+            _recoverCount++;
+            SetHealth("recovering", "正在恢复采集…" + (reason.Length > 0 ? "（" + reason + "）" : ""));
+
             try
             {
-                if (!Frames.PresentMonFound) return;
-                if (!PrivilegeHelper.CanCaptureFrames) return;
-                if (Frames.IsRunning) return;
-                ClearResidualSessions("拉起前");
+                Frames.Stop();
+                ClearResidualSessions("恢复前");
+                try { Thread.Sleep(200); } catch (Exception) { }
                 Frames.Start();
             }
             catch (Exception) { }
+
+            _hadFramesThisRun = false;
+            _linesSeen = -1;            // 强制下一轮重新取行数
+            _linesChangedAt = now;
+            _pendingAt = now;
+            _pendingLines = Frames.LinesSeen;
+
+            var t = Trace;
+            if (t != null)
+            {
+                try
+                {
+                    t(string.Format("恢复采集（{0}）：累计第 {1} 次，此前连续失败 {2} 次",
+                        reason, _recoverCount, _recoverFails));
+                }
+                catch (Exception) { }
+            }
         }
 
         /// <summary>
@@ -841,50 +1088,24 @@ namespace PerfOverlay.Services
             if (!Diagnostic) return;
             try
             {
+                // 延迟那一列单独取：UI 开关关着的时候 snap.Latency* 是空的，
+                // 但排障恰恰需要知道「系统到底给没给数」，所以直接问引擎。
+                var fs = Frames.Snapshot();
+                string lat = string.Format("lat={0}/{1} zero={2}/{3} p50={4:0.0} mode=[{5}]",
+                    fs.LatencySamples, fs.LatencyWindowFrames, fs.LatencyZeroFrames,
+                    fs.LatencyWindowFrames, fs.LatencyP50Ms, fs.PresentMode ?? "");
+
                 string line = string.Format(
                     "{0:HH:mm:ss} tgt={1}({2}) pmRun={3} avail={4} fps={5:0.0} low={6:0.0} " +
-                    "n={7} lines={8} sess={9} msg=[{10}] err=[{11}] se=[{12}] q={13}",
+                    "n={7} lines={8} sess={9} msg=[{10}] err=[{11}] se=[{12}] q={13} {14} " +
+                    "health={15} rec={16}/{17}",
                     DateTime.Now, Frames.TargetPid, snap.TargetProcess, Frames.IsRunning,
                     snap.FpsOk, snap.Fps, snap.LowFps, snap.FrameCount,
                     Frames.LinesSeen, Frames.SessionName,
-                    snap.FpsMessage, Frames.LastError, Frames.StderrText, Frames.QueueStat);
+                    snap.FpsMessage, Frames.LastError, Frames.StderrText, Frames.QueueStat, lat,
+                    _health, _recoverCount, _recoverFails);
 
                 File.AppendAllText(_frameDiagPath, line + Environment.NewLine);
-            }
-            catch (Exception) { }
-        }
-
-        /// <summary>
-        /// PresentMon 活着但连续 60 秒一帧都没收到 —— 会话在建立时就被拦截了
-        /// （例如游戏反作弊启动在先）。这种会话不会自己恢复，必须拆掉重建。
-        /// 退出游戏后靠这条自动恢复，用户不用手动重启浮窗。
-        /// </summary>
-        private void RecycleIfStarved(MetricsSnapshot snap)
-        {
-            try
-            {
-                if (!Frames.IsRunning) { _starvedSince = DateTime.MinValue; return; }
-
-                if (snap.FrameCount > 0)
-                {
-                    _starvedSince = DateTime.MinValue;
-                    return;
-                }
-
-                if (_starvedSince == DateTime.MinValue)
-                {
-                    _starvedSince = DateTime.UtcNow;
-                    return;
-                }
-
-                if ((DateTime.UtcNow - _starvedSince).TotalSeconds < 60) return;
-
-                _starvedSince = DateTime.MinValue;
-                Frames.Stop();
-                // 光停自己那条会话不够：僵死的旧会话（包括探针留下的 PerfOverlayCols_*）
-                // 会继续占着 DXGI 通道，重建出来的新会话依旧 0 行，于是每 60 秒白转一圈。
-                ClearResidualSessions("重建前");
-                Frames.Start();
             }
             catch (Exception) { }
         }

@@ -191,6 +191,24 @@ namespace PerfOverlay.Services
             get { var p = _proc; return p != null && !p.HasExited; }
         }
 
+        /// <summary>
+        /// 本次 PresentMon 进程已经活了多久（秒）。
+        ///
+        /// 判断「一行输出都没有」是不是故障必须用它：会话建立需要一两秒，
+        /// 刚起来的进程不出数据是正常的，超过 8 秒还一行没有才是真卡住。
+        /// </summary>
+        public double UptimeSeconds
+        {
+            get
+            {
+                DateTime t = _startedUtc;
+                if (t == DateTime.MinValue) return 0;
+                return (DateTime.UtcNow - t).TotalSeconds;
+            }
+        }
+
+        private DateTime _startedUtc = DateTime.MinValue;
+
         public string LastError { get { return _lastError; } }
 
         /// <summary>PresentMon 的 stderr 现场（进程还活着时也能取到）。诊断用。</summary>
@@ -292,6 +310,9 @@ namespace PerfOverlay.Services
             try
             {
                 _sessionName = "PerfOverlay_" + Guid.NewGuid().ToString("N").Substring(0, 10);
+                // 立刻登记「这个会话是活的」：启动兜底/手动清理都在 25 秒后跑，
+                // 它们按 PerfOverlay 前缀扫会话，不登记就会把这一条当残留停掉。
+                EtwCleaner.ProtectSession = _sessionName;
                 var psi = new ProcessStartInfo
                 {
                     FileName = _exePath,
@@ -329,6 +350,7 @@ namespace PerfOverlay.Services
 
                 p.Start();
                 _proc = p;
+                _startedUtc = DateTime.UtcNow;
 
                 // ── stdout：专用线程同步读 ────────────────────────────────
                 // 不用 BeginOutputReadLine + OutputDataReceived。那条路每来一行就要
@@ -956,12 +978,16 @@ namespace PerfOverlay.Services
         {
             var p = _proc;
             _proc = null;
+            _startedUtc = DateTime.MinValue;
             var ot = _outThread;
             var et = _errThread;
             _outThread = null;
             _errThread = null;
             string session = _sessionName;
             _sessionName = "";
+            // 解除登记：此刻这个会话是真的要收掉了，后续清理可以正常回收
+            if (string.Equals(EtwCleaner.ProtectSession, session, StringComparison.OrdinalIgnoreCase))
+                EtwCleaner.ProtectSession = "";
 
             if (p != null)
             {
@@ -1010,6 +1036,21 @@ namespace PerfOverlay.Services
                 }
             }
             catch (Exception) { }
+
+            // ── 必须等到会话真的消失才返回 ────────────────────────────────
+            // `--terminate_existing_session` 只是"已受理"，内核回收是异步的。
+            // 若紧接着 Start 一条新会话：新会话能建起来、也能出几秒数据，
+            // 旧会话一收尾，事件路由就断在那里 —— 现场表现正是「恢复了几秒又没了」。
+            // 这里最多等三轮（正常情况第一轮就已消失，不产生额外开销）。
+            for (int i = 0; i < 3; i++)
+            {
+                bool alive;
+                try { alive = EtwCleaner.SessionExists(session); }
+                catch (Exception) { return; }
+                if (!alive) return;
+                try { EtwCleaner.StopSession(session); } catch (Exception) { }
+                try { Thread.Sleep(150); } catch (Exception) { }
+            }
         }
 
         public void Dispose()

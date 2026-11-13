@@ -475,13 +475,27 @@
                                        FontSize="12" LineHeight="19" TextWrapping="Wrap"
                                        Foreground="{DynamicResource TextSecondary}" />
 
-                            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <!-- 状态行 + 右侧「恢复」：
+                                 恢复按钮只在**有采集权限**时出现（没权限时这个位置留给下面的
+                                 「以管理员身份启动」）。它走的是和自动恢复完全相同的那条路径，
+                                 不是另写一套——自动恢复退避到 60 秒时，用户不必干等。 -->
+                            <Grid Margin="0,10,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
                                 <Ellipse x:Name="DotStatus" Width="8" Height="8" Fill="{DynamicResource DotIdle}"
                                          VerticalAlignment="Top" Margin="0,5,7,0" />
-                                <TextBlock x:Name="TxtFrameStatus" Text="检测中…" FontSize="12.5"
+                                <TextBlock x:Name="TxtFrameStatus" Grid.Column="1" Text="检测中…" FontSize="12.5"
                                            Foreground="{DynamicResource TextPrimary}"
-                                           TextWrapping="Wrap" MaxWidth="278" />
-                            </StackPanel>
+                                           TextWrapping="Wrap" MaxWidth="248" />
+                                <Button x:Name="BtnRecover" Grid.Column="2" Content="恢复"
+                                        Style="{StaticResource GhostButton}" FontSize="12"
+                                        Padding="9,4" Margin="8,0,0,0" VerticalAlignment="Top"
+                                        Visibility="Collapsed" Click="OnRecoverClick"
+                                        ToolTip="重建帧采集：停掉当前采集、清掉残留的 ETW 会话后重新拉起" />
+                            </Grid>
 
                             <Button x:Name="BtnElevate" Content="以管理员身份启动" Style="{StaticResource PrimaryButton}"
                                     HorizontalAlignment="Left" Padding="14,6" Margin="0,12,0,0"

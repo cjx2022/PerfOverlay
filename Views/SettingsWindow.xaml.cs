@@ -2,6 +2,7 @@ using System;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using PerfOverlay.Services;
 
 namespace PerfOverlay.Views
@@ -15,6 +16,22 @@ namespace PerfOverlay.Views
         private bool _allowClose;
         /// <summary>采集端引用，只用来查 CT 状态和装完驱动后重新探测。</summary>
         private MonitorHost _host;
+        /// <summary>配图模式：状态行与按钮改成固定值，避免截图带上本机真实状态。</summary>
+        private bool _shotMode;
+        /// <summary>面板开着时每秒刷新一次采集状态：恢复过程是动态的，静态文字等于没提示。</summary>
+        private DispatcherTimer _statusTimer;
+
+        // 状态点三色。缓存成静态画刷：每秒 new 一个 SolidColorBrush 是白扔 GC。
+        private static readonly Brush StatusOk = Frozen(Color.FromRgb(0x2C, 0xBF, 0x6E));
+        private static readonly Brush StatusWarn = Frozen(Color.FromRgb(0xF5, 0xA6, 0x23));
+        private static readonly Brush StatusBad = Frozen(Color.FromRgb(0xE5, 0x48, 0x4D));
+
+        private static Brush Frozen(Color c)
+        {
+            var b = new SolidColorBrush(c);
+            b.Freeze();
+            return b;
+        }
 
         public event EventHandler<AppSettings> SettingsChanged;
         /// <summary>0=左上 1=中上 2=右上。参数是选中的档位。</summary>
@@ -27,6 +44,20 @@ namespace PerfOverlay.Views
 
             // 标题栏上的产品名后面挂版本号：出问题时一眼知道在跑哪一版
             TxtProduct.Text = "PerfOverlay v" + UpdateChecker.CurrentVersion;
+
+            // 采集状态是活的：自动恢复会在后台把「恢复中 → 采集中」走一遍，
+            // 面板必须自己跟着变，否则用户盯着一个「采集中」看不出程序到底有没有在救。
+            _statusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+            _statusTimer.Tick += (s, a) =>
+            {
+                if (!IsVisible) { _statusTimer.Stop(); return; }
+                UpdateFrameStatus(_host);
+            };
+            IsVisibleChanged += (s, a) =>
+            {
+                if (IsVisible) _statusTimer.Start();
+                else _statusTimer.Stop();
+            };
         }
 
         /// <summary>诊断用：三个位置按钮，供「等宽、不越界」的断言。</summary>
@@ -153,13 +184,22 @@ namespace PerfOverlay.Views
         /// </summary>
         internal void ApplyShotState(bool startupEnabled)
         {
+            _shotMode = true;
             ChkStartup.IsChecked = startupEnabled;
 
-            DotStatus.Fill = new SolidColorBrush(Color.FromRgb(0x2C, 0xBF, 0x6E));
+            DotStatus.Fill = StatusOk;
             TxtFrameStatus.Text = "采集中（前台窗口）";
             BtnElevate.Visibility = Visibility.Collapsed;
+            BtnRecover.Visibility = Visibility.Collapsed;
         }
 
+        /// <summary>
+        /// 刷新「帧数采集」卡的状态。
+        ///
+        /// 这里读的是**采集管道**的健康度（host.FramesHealth），不是「当前画面有没有帧」：
+        /// 后者在桌面上静止时本来就是 0，用它做状态会让人以为程序坏了。
+        /// 文案按状态给下一步：能自己好的说「正在恢复」，救不回来的才让用户点「恢复」。
+        /// </summary>
         public void UpdateFrameStatus(MonitorHost host)
         {
             if (host == null) return;
@@ -167,36 +207,88 @@ namespace PerfOverlay.Views
             _host = host;
 
             bool can = PrivilegeHelper.CanCaptureFrames;
-            bool running = host.FramesRunning;
+            string health = host.FramesHealth ?? "";
+            string note = host.FramesHealthNote ?? "";
 
-            if (running)
+            if (!host.Frames.PresentMonFound)
             {
-                DotStatus.Fill = new SolidColorBrush(Color.FromRgb(0x2C, 0xBF, 0x6E));
-                TxtFrameStatus.Text = "采集中（前台窗口）";
-            }
-            else if (!host.Frames.PresentMonFound)
-            {
-                DotStatus.Fill = new SolidColorBrush(Color.FromRgb(0xE5, 0x48, 0x4D));
-                TxtFrameStatus.Text = "缺少 PresentMon.exe（tools 目录）";
+                SetStatus(StatusBad, "缺少 PresentMon.exe（tools 目录）");
             }
             else if (!can)
             {
-                DotStatus.Fill = new SolidColorBrush(Color.FromRgb(0xF5, 0xA6, 0x23));
-                TxtFrameStatus.Text = "未授权，点下方按钮授权";
+                SetStatus(StatusWarn, "未授权，点下方按钮授权");
+            }
+            else if (health == "ok")
+            {
+                SetStatus(StatusOk, "采集中（前台窗口）");
+            }
+            else if (health == "starting")
+            {
+                SetStatus(StatusWarn, "采集启动中…");
+            }
+            else if (health == "recovering")
+            {
+                SetStatus(StatusWarn, "正在恢复采集…");
+            }
+            else if (health == "starved" || health == "stalled")
+            {
+                SetStatus(StatusWarn, (note.Length > 0 ? note : "采集没有输出") + "，正在自动恢复…");
+            }
+            else if (health == "exhausted")
+            {
+                // 自动恢复已经连着失败多次：退避到 60 秒一轮，别让用户干等，直接给按钮
+                SetStatus(StatusBad, (note.Length > 0 ? note : "采集失效") + "，点右侧「恢复」重试");
             }
             else
             {
-                DotStatus.Fill = new SolidColorBrush(Color.FromRgb(0xE5, 0x48, 0x4D));
-                TxtFrameStatus.Text = "启动失败：" + host.FramesDiagnostic;
+                // 兜底：健康度还没算出来（启动最初的一瞬）
+                SetStatus(host.FramesRunning ? StatusOk : StatusBad,
+                          host.FramesRunning ? "采集中（前台窗口）" : "启动失败：" + host.FramesDiagnostic);
             }
 
             RefreshPrivilegeUi();
             RefreshTempUi();
         }
 
+        private void SetStatus(Brush dot, string text)
+        {
+            DotStatus.Fill = dot;
+            TxtFrameStatus.Text = text;
+        }
+
         private void RefreshPrivilegeUi()
         {
+            if (_shotMode) return;
+
+            bool can = PrivilegeHelper.CanCaptureFrames;
+
+            // 有采集权限时「以管理员身份启动」就没有意义了，那个位置让给「恢复」；
+            // 没权限时反过来——恢复按钮点了也建不起会话，只会让人白点一次。
             BtnElevate.IsEnabled = !PrivilegeHelper.IsElevated;
+            BtnElevate.Visibility = can ? Visibility.Collapsed : Visibility.Visible;
+            BtnRecover.Visibility = can ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        /// <summary>
+        /// 手动恢复采集。只置一个请求标志：真正拆会话/重建采集的动作在采样线程上做，
+        /// 采集对象的生命周期归那条线程管，UI 线程直接动手会和它抢。
+        /// </summary>
+        private void OnRecoverClick(object sender, RoutedEventArgs e)
+        {
+            if (_host == null) return;
+
+            _host.RequestRecovery();
+            SetStatus(StatusWarn, "正在恢复采集…");
+
+            // 恢复本身很快，但按钮要按住两秒：否则连点会把刚建起来的会话又拆掉
+            BtnRecover.IsEnabled = false;
+            var t = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+            t.Tick += (s, a) =>
+            {
+                t.Stop();
+                BtnRecover.IsEnabled = true;
+            };
+            t.Start();
         }
 
         /// <summary>

@@ -59,9 +59,105 @@ namespace PerfOverlay.Services
             w(string.Format("  合计：通过 {0} 项，失败 {1} 项", pass, fail));
         }
 
-        public static void Run()
+        /// <summary>
+        /// ETW 会话清理的真值表。
+        ///
+        /// 2026-11-13 的事故：清理器按 `PerfOverlay` 前缀扫会话，把**自己正在用的那个**
+        /// 一起停掉 → PresentMon 进程还活着、会话没了、stdout 恒 0 行，浮窗永久 N/A。
+        /// 这条规则用真值表钉住，不再依赖「看日志里有没有报错」。
+        /// </summary>
+        private static void RunEtwKeepChecks(Action<string> w)
         {
-            var sb = new StringBuilder();
+            int pass = 0, fail = 0;
+            Action<string, string, string> check = (name, actual, expect) =>
+            {
+                bool ok = actual == expect;
+                if (ok) pass++; else fail++;
+                w(string.Format("  [{0}] {1}", ok ? "通过" : "失败", name));
+                if (!ok) w("        实际: [" + actual + "]  期望: [" + expect + "]");
+            };
+
+            string J(List<string> xs) { return string.Join(",", xs.ToArray()); }
+
+            var list = new List<string>
+            {
+                "",
+                "数据收集器集                   类型                          状态",
+                "-------------------------------------------------------------------------------",
+                "PerfOverlay_aaaa               跟踪                          正在运行",
+                "PerfOverlay_bbbb               跟踪                          正在运行",
+                "PerfOverlayCols_cccc           跟踪                          正在运行",
+                "NT Kernel Logger               跟踪                          正在运行",
+                "EventLog-Application           跟踪                          正在运行",
+                "",
+            };
+
+            check("保留正在用的 aaaa → 只停 bbbb / Cols_cccc",
+                J(EtwCleaner.PickResiduals(list, "PerfOverlay_aaaa")),
+                "PerfOverlay_bbbb,PerfOverlayCols_cccc");
+            check("没有登记当前会话 → 三条全停",
+                J(EtwCleaner.PickResiduals(list, "")),
+                "PerfOverlay_aaaa,PerfOverlay_bbbb,PerfOverlayCols_cccc");
+            check("保留名大小写不敏感",
+                J(EtwCleaner.PickResiduals(list, "perfoverlay_BBBB")),
+                "PerfOverlay_aaaa,PerfOverlayCols_cccc");
+            check("探针会话正在用时也不停",
+                J(EtwCleaner.PickResiduals(list, "PerfOverlayCols_cccc")),
+                "PerfOverlay_aaaa,PerfOverlay_bbbb");
+            check("非本程序会话一律不动（NT Kernel Logger / EventLog）",
+                J(EtwCleaner.PickResiduals(new List<string> { "NT Kernel Logger 跟踪 正在运行", "EventLog-Application 跟踪 正在运行" }, "")),
+                "");
+            check("空输入不抛异常", J(EtwCleaner.PickResiduals(null, "")), "");
+
+            w(string.Format("  ETW 会话清理：通过 {0} 项，失败 {1} 项", pass, fail));
+        }
+
+        /// <summary>
+        /// 采集自恢复的真值表。
+        ///
+        /// 这套判定的两条边界靠人眼是看不出来的：
+        ///   · 刚起来的采集不能算故障（否则每次启动都先被自己拆一遍）；
+        ///   · 桌面静止时「没有新帧」也不能算故障（否则看静态网页会反复重建会话）。
+        /// 所以规则抽成纯函数，这里按秒级时间点逐条钉住。
+        /// </summary>
+        private static void RunFramesHealthChecks(Action<string> w)
+        {
+            int pass = 0, fail = 0;
+            Action<string, string, string> check = (name, actual, expect) =>
+            {
+                bool ok = actual == expect;
+                if (ok) pass++; else fail++;
+                w(string.Format("  [{0}] {1}", ok ? "通过" : "失败", name));
+                if (!ok) w("        实际: [" + actual + "]  期望: [" + expect + "]");
+            };
+
+            // 参数顺序：lines, uptime, idle, hadFrames, fails
+            check("刚起来、还没有输出 → 启动中（不重建）",
+                MonitorHost.DecideFramesHealth(0, 3, 3, false, 0), "starting");
+            check("超过宽限期仍 0 行 → 会话没建起来",
+                MonitorHost.DecideFramesHealth(0, 10, 10, false, 0), "starved");
+            check("0 行且已连续失败 3 次 → 交给手动恢复",
+                MonitorHost.DecideFramesHealth(0, 60, 60, false, 3), "exhausted");
+            check("有输出且刚有新行 → 正常",
+                MonitorHost.DecideFramesHealth(120, 60, 1, true, 0), "ok");
+            check("出过帧、30 秒没新行 → 停摆（重建）",
+                MonitorHost.DecideFramesHealth(120, 60, 31, true, 0), "stalled");
+            check("没出过帧、30 秒没新行 → 桌面静止，不重建",
+                MonitorHost.DecideFramesHealth(1, 60, 31, false, 0), "ok");
+            check("停摆且已失败 3 次 → 交给手动恢复",
+                MonitorHost.DecideFramesHealth(120, 60, 40, true, 3), "exhausted");
+
+            check("失败 0 次：立刻重试", MonitorHost.RecoverBackoffSeconds(0).ToString(), "0");
+            check("失败 1 次：等 8 秒", MonitorHost.RecoverBackoffSeconds(1).ToString(), "8");
+            check("失败 2 次：等 16 秒", MonitorHost.RecoverBackoffSeconds(2).ToString(), "16");
+            check("失败 3 次：等 32 秒", MonitorHost.RecoverBackoffSeconds(3).ToString(), "32");
+            check("失败 4 次及以上：封顶 60 秒", MonitorHost.RecoverBackoffSeconds(9).ToString(), "60");
+
+            w(string.Format("  采集自恢复：通过 {0} 项，失败 {1} 项", pass, fail));
+        }
+
+        public static void Run()
+        {            var sb = new StringBuilder();
             Action<string> w = line => sb.AppendLine(line);
 
             w("=== PerfOverlay 自检 ===");
@@ -280,6 +376,14 @@ namespace PerfOverlay.Services
 
             w("--- 帧统计算法自证（1% Low） ---");
             RunLowFpsChecks(w);
+            w("");
+
+            w("--- ETW 会话清理（不得误杀当前采集会话）---");
+            RunEtwKeepChecks(w);
+            w("");
+
+            w("--- 采集自恢复（判定与退避）---");
+            RunFramesHealthChecks(w);
             w("");
 
             w("--- 前台窗口 ---");
