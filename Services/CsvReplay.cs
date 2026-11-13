@@ -48,6 +48,9 @@ namespace PerfOverlay.Services
                 // 显示延迟：lat=中位数 p95=95 分位 samples=有效样本数
                 double expLat = -1, expP95 = -1;
                 int expSamples = -1;
+                // 期望「是否判为有效」：-1 = 按样本数推断（>0 即有效）。
+                // 需要显式写的时候只有一种：样本 >0 但仍低于门槛，应当判采样中。
+                int expOk = -1;
                 string desc = "";
 
                 var lines = File.ReadAllLines(f, Encoding.UTF8);
@@ -67,6 +70,8 @@ namespace PerfOverlay.Services
                         if (TryGetInt(ln, "frames", out fr)) expFrames = fr;
                         int sc;
                         if (TryGetInt(ln, "samples", out sc)) expSamples = sc;
+                        int okv;
+                        if (TryGetInt(ln, "ok", out okv)) expOk = okv;
                     }
                     else if (ln.StartsWith("# desc", StringComparison.OrdinalIgnoreCase))
                     {
@@ -120,7 +125,9 @@ namespace PerfOverlay.Services
                     // 样本数为 0 时同时断言「不能判为有效」：全 0 的意思是没有数据，
                     // 不是「零延迟」。这条以前最容易写错成显示 0ms。
                     bool countOk = snap.LatencySamples == expSamples;
-                    bool stateOk = expSamples > 0 ? snap.LatencyOk : !snap.LatencyOk;
+                    bool stateOk = expOk >= 0
+                        ? snap.LatencyOk == (expOk == 1)
+                        : (expSamples > 0 ? snap.LatencyOk : !snap.LatencyOk);
                     bool ok = countOk && stateOk;
                     if (!ok) okAll = false;
                     sb.AppendLine(string.Format("   [{0}] 延迟样本 实际={1} 期望={2}  有效性={3}",

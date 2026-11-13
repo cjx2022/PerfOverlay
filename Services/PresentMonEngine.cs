@@ -25,6 +25,12 @@ namespace PerfOverlay.Services
         public double LatencyP95Ms;
         public int LatencySamples;
         public string LatencyMessage;
+        // 诊断用：统计窗口内一共有多少帧、其中多少帧系统没给出出屏时刻。
+        // 「长期 --」到底是整段没值还是偶尔有值，靠这两个数说话，不靠猜。
+        public int LatencyWindowFrames;
+        public int LatencyZeroFrames;
+        /// <summary>采集器报的呈现路径（PresentMon 的 PresentMode 列），取最近一帧。</summary>
+        public string PresentMode;
     }
 
     /// <summary>
@@ -62,9 +68,14 @@ namespace PerfOverlay.Services
         private const int MinFramesForLow = 100;        // 少于 100 帧谈 1% 没有意义
         private const double Percentile = 0.01;         // 1%
         private const double StaleSeconds = 2.5;        // 超过这个时间没新帧就判为停止提交
-        // 显示延迟用「够不够说明问题」当门槛：60fps 下 10 秒 600 帧，20 个有效样本
-        // 已经能给出稳定的中位数；再少就说明这段画面根本追踪不到显示环节。
-        private const int MinLatencySamples = 20;
+        // 显示延迟的样本门槛。
+        //
+        // 原来是 20：60fps 下 10 秒 600 帧，20 个样本才谈得上稳定中位数。
+        // 但实测游戏里常见的是「整段走直通显示、只有切菜单/加载画面才回到合成」，
+        // 有效样本会长时间停在个位数 —— 门槛压在 20 就等于永远看不到数。
+        // 降到 5：样本少时中位数仍有参考价值（悬停会标出样本数与总帧数，
+        // 用户能看出这个数是在多少帧里取的），比一直显示 `--` 更有用。
+        private const int MinLatencySamples = 5;
 
         private readonly object _gate = new object();
         private readonly string _exePath;
@@ -134,6 +145,10 @@ namespace PerfOverlay.Services
         private int _idxTime = -1;
         private int _idxSwapChain = -1;
         private int _idxUntilDisplayed = -1;
+        /// <summary>PresentMode 列：低频采样即可，它不会逐帧变，没必要每帧切字符串。</summary>
+        private int _idxMode = -1;
+        private string _lastMode = "";
+        private int _modeTick;
 
         // 是否采集显示延迟。默认关：v1_metrics 的 CSV 里这列一直都在，
         // 不采的时候连切列都不做（每帧少一次 Substring），也不占内存。
@@ -478,6 +493,7 @@ namespace PerfOverlay.Services
             int chStart = -1, chLen = 0;
             int appStart = -1, appLen = 0;
             int dlStart = -1, dlLen = 0;
+            int modeStart = -1, modeLen = 0;
 
             int col = 0, start = 0, total = line.Length;
             for (int i = 0; i <= total; i++)
@@ -490,6 +506,7 @@ namespace PerfOverlay.Services
                 else if (col == _idxSwapChain) { chStart = start; chLen = i - start; }
                 else if (col == _idxApp) { appStart = start; appLen = i - start; }
                 else if (_captureLatency && col == _idxUntilDisplayed) { dlStart = start; dlLen = i - start; }
+                else if (_captureLatency && col == _idxMode) { modeStart = start; modeLen = i - start; }
 
                 col++;
                 start = i + 1;
@@ -539,6 +556,14 @@ namespace PerfOverlay.Services
             {
                 _lastSeenPid = pid;
                 _lastFrameWall = NowSeconds();
+
+                // 呈现路径低频采样：120 帧切一次字符串，热路径上几乎无感。
+                // 存下来只为在「拿不到延迟」时告诉用户走的是哪条路径。
+                if (_captureLatency && modeStart >= 0 && modeLen > 0 && (++_modeTick % 120) == 0)
+                {
+                    string m = line.Substring(modeStart, modeLen).Trim();
+                    if (m.Length > 0) _lastMode = m;
+                }
                 // 应用名只在首次见到该 PID 时解析一次（每帧省一个子串 + Trim）
                 if (appLen > 0 && !_appNameOf.ContainsKey(pid))
                 {
@@ -644,6 +669,9 @@ namespace PerfOverlay.Services
                 // 显示延迟列。v1_metrics（PresentMon 1.x 口径）里就是这个名字；
                 // 换 --v2_metrics 的话叫 DisplayLatency，届时这里补一条即可。
                 _idxUntilDisplayed = IndexOf(cols, "msUntilDisplayed");
+                // 呈现路径（Hardware: Independent Flip / Composed: Flip …）。
+                // 只用来解释「为什么这一列没数」，不参与算数值。
+                _idxMode = IndexOf(cols, "PresentMode");
             }
         }
 
@@ -690,7 +718,7 @@ namespace PerfOverlay.Services
         {
             // 两个 string 字段都必须给初值：struct 的默认值是 null，
             // 上层到处在写 `.Length > 0`，漏一个就是空引用（本机实测崩过）。
-            var snap = new FrameSnapshot { Message = "", LatencyMessage = "" };
+            var snap = new FrameSnapshot { Message = "", LatencyMessage = "", PresentMode = "" };
 
             lock (_gate)
             {
@@ -769,6 +797,7 @@ namespace PerfOverlay.Services
                 // 平均值会被单帧拉飞，中位数才代表「平常看到多少」。
                 if (_captureLatency)
                 {
+                    snap.PresentMode = _lastMode == null ? "" : _lastMode;
                     if (_idxUntilDisplayed < 0)
                     {
                         snap.LatencyMessage = "采集器未提供延迟列";
@@ -777,10 +806,17 @@ namespace PerfOverlay.Services
                     {
                         _delayScratch.Clear();
                         var ds = q.DelayMs;
+                        int zero = 0;
                         for (int i = 0; i < ds.Count; i++)
+                        {
                             if (ds[i] > 0) _delayScratch.Add(ds[i]);
+                            else zero++;
+                        }
 
                         snap.LatencySamples = _delayScratch.Count;
+                        snap.LatencyWindowFrames = ds.Count;
+                        snap.LatencyZeroFrames = zero;
+
                         if (_delayScratch.Count >= MinLatencySamples)
                         {
                             _delayScratch.Sort();
@@ -788,11 +824,20 @@ namespace PerfOverlay.Services
                             snap.LatencyP95Ms = PercentileOf(_delayScratch, 0.95);
                             snap.LatencyOk = true;
                         }
+                        else if (_delayScratch.Count > 0)
+                        {
+                            // 差值一点点也要说清楚：窗口里只有零星几帧被追踪到出屏时刻
+                            snap.LatencyMessage = string.Format("采样中（{0}/{1} 帧有出屏时刻）",
+                                _delayScratch.Count, ds.Count);
+                        }
                         else
                         {
-                            snap.LatencyMessage = _delayScratch.Count == 0
-                                ? "这段画面追踪不到显示环节（该渲染路径不上报出屏时刻）"
-                                : "采样中";
+                            // 一帧都没有：把「一共多少帧、走的哪条呈现路径」直接摆出来，
+                            // 让用户能自己判断是路径限制还是采集坏了，不用猜「--」是什么意思。
+                            snap.LatencyMessage = string.Format(
+                                "窗口内 {0} 帧系统都没给出出屏时刻{1}。批量直通显示（独立翻转 / 全屏独占）时系统不上报，切窗口化通常就有数",
+                                ds.Count,
+                                snap.PresentMode.Length > 0 ? "（呈现路径：" + snap.PresentMode + "）" : "");
                         }
                     }
                 }

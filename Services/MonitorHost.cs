@@ -438,9 +438,9 @@ namespace PerfOverlay.Services
                 if (snap.LatencyOk)
                 {
                     snap.LatencyDetail = string.Format(
-                        "显示延迟：Present 到出屏的中位数 {0:0.0} ms（P95 {1:0.0} ms，{2} 帧样本）&#10;"
+                        "显示延迟：Present 到出屏的中位数 {0:0.0} ms（P95 {1:0.0} ms，{2}/{3} 帧样本）&#10;"
                         + "体感参考：8 ms 以内几乎无感 · 15 ms 顺畅 · 25 ms 轻微发钝 · 40 ms 以上明显拖手",
-                        f.LatencyP50Ms, f.LatencyP95Ms, f.LatencySamples);
+                        f.LatencyP50Ms, f.LatencyP95Ms, f.LatencySamples, f.LatencyWindowFrames);
                 }
                 else
                 {
