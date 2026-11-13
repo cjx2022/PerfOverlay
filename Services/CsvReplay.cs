@@ -51,6 +51,8 @@ namespace PerfOverlay.Services
                 // 期望「是否判为有效」：-1 = 按样本数推断（>0 即有效）。
                 // 需要显式写的时候只有一种：样本 >0 但仍低于门槛，应当判采样中。
                 int expOk = -1;
+                // FT 帧时：ft=中位帧时（毫秒）。帧时与 FPS 同源，是 0.9.8 的主指标。
+                double expFt = -1;
                 string desc = "";
 
                 var lines = File.ReadAllLines(f, Encoding.UTF8);
@@ -66,6 +68,7 @@ namespace PerfOverlay.Services
                         ParseExpect(ln, "low", ref expLow);
                         ParseExpect(ln, "lat", ref expLat);
                         ParseExpect(ln, "p95", ref expP95);
+                        ParseExpect(ln, "ft", ref expFt);
                         int fr;
                         if (TryGetInt(ln, "frames", out fr)) expFrames = fr;
                         int sc;
@@ -97,6 +100,8 @@ namespace PerfOverlay.Services
                 sb.AppendLine(string.Format("   数据: 帧数={0}  available={1}  msg={2}",
                     snap.FrameCount, snap.Available, snap.Message.Length > 0 ? snap.Message : "-"));
                 sb.AppendLine(string.Format("   结果: FPS={0:0.00}  LOW={1:0.00}", snap.Fps, snap.LowFps));
+                sb.AppendLine(string.Format("   帧时: P50={0:0.00}  P95={1:0.00}  样本={2}",
+                    snap.FrameTimeMs, snap.FrameTimeP95Ms, snap.FrameTimeSamples));
                 sb.AppendLine(string.Format("   延迟: 样本={0}  P50={1:0.00}  P95={2:0.00}  {3}",
                     snap.LatencySamples, snap.LatencyP50Ms, snap.LatencyP95Ms,
                     snap.LatencyOk ? "有效" : (snap.LatencyMessage.Length > 0 ? snap.LatencyMessage : "-")));
@@ -119,6 +124,15 @@ namespace PerfOverlay.Services
                     bool ok = Near(snap.LowFps, expLow);
                     if (!ok) okAll = false;
                     sb.AppendLine(string.Format("   [{0}] LOW  实际={1:0.00} 期望={2:0.00}", ok ? "通过" : "失败", snap.LowFps, expLow));
+                }
+                if (expFt >= 0)
+                {
+                    // 帧时中位数：与 FPS 同一个 1 秒窗口，必须和 FPS 对得上
+                    // （16.67 ms ↔ 60 FPS）。样本数为 0 说明这一路根本没出数，一样判失败。
+                    bool ok = snap.FrameTimeSamples > 0 && Near(snap.FrameTimeMs, expFt);
+                    if (!ok) okAll = false;
+                    sb.AppendLine(string.Format("   [{0}] 帧时 实际={1:0.00} 期望={2:0.00} 样本={3}",
+                        ok ? "通过" : "失败", snap.FrameTimeMs, expFt, snap.FrameTimeSamples));
                 }
                 if (expSamples >= 0)
                 {

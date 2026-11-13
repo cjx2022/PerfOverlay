@@ -85,7 +85,7 @@ namespace PerfOverlay.Views
         public System.Windows.FrameworkElement[] MetricSwitches()
         {
             return new System.Windows.FrameworkElement[]
-            { ChkCpu, ChkMem, ChkFps, ChkLow, ChkLatency, ChkVram, ChkClock, ChkGpu, ChkCpuTemp, ChkGpuTemp };
+            { ChkCpu, ChkMem, ChkFps, ChkLow, ChkFrameTime, ChkVram, ChkClock, ChkGpu, ChkCpuTemp, ChkGpuTemp };
         }
 
         /// <summary>诊断用：内容区根（不含标题栏），按钮越界检查以它为右边界。</summary>
@@ -134,7 +134,7 @@ namespace PerfOverlay.Views
             ChkMem.IsChecked = _s.ShowMemory;
             ChkFps.IsChecked = _s.ShowFps;
             ChkLow.IsChecked = _s.ShowLowFps;
-            ChkLatency.IsChecked = _s.ShowDisplayLatency;
+            ChkFrameTime.IsChecked = _s.ShowFrameTime;
             ChkVram.IsChecked = _s.ShowVram;
             ChkClock.IsChecked = _s.ShowClock;
             ChkGpu.IsChecked = _s.ShowGpu;
@@ -349,7 +349,7 @@ namespace PerfOverlay.Views
             _s.ShowMemory = ChkMem.IsChecked == true;
             _s.ShowFps = ChkFps.IsChecked == true;
             _s.ShowLowFps = ChkLow.IsChecked == true;
-            _s.ShowDisplayLatency = ChkLatency.IsChecked == true;
+            _s.ShowFrameTime = ChkFrameTime.IsChecked == true;
             _s.ShowVram = ChkVram.IsChecked == true;
             _s.ShowClock = ChkClock.IsChecked == true;
             _s.ShowGpu = ChkGpu.IsChecked == true;

@@ -1,4 +1,4 @@
-# expect fps=60.00 low=60.00 frames=600
+# expect fps=60.00 low=60.00 frames=600 ft=16.67
 # desc 600 帧稳定 60fps
 Application,ProcessID,SwapChainAddress,Runtime,SyncInterval,PresentFlags,AllowsTearing,PresentMode,msInPresentAPI,msBetweenPresents,msUntilRenderComplete,msUntilDisplayed,msBetweenDisplayChange,msUntilNextPresent,TimeInSeconds
 test3d.exe,4321,0x0000000000001234,Other,0,0,0,Hardware: Legacy Flip,0.4,16.666667,1.0,8.0,16.666667,0.1,0.000000

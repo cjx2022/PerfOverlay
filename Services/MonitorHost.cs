@@ -54,14 +54,14 @@ namespace PerfOverlay.Services
         public bool TempGpuOk;
         public string TempGpuDetail = "";
 
-        // ---- 显示延迟（默认关闭，用户自己在面板里勾）----
-        /// <summary>中位显示延迟（毫秒）：Present 调用 → 该帧被扫到屏幕上。</summary>
-        public double LatencyMs;
-        /// <summary>P95，给 tooltip 用；浮窗上只显示中位数。</summary>
-        public double LatencyP95Ms;
-        public bool LatencyOk;
-        public int LatencySamples;
-        public string LatencyDetail = "";
+        // ---- FT 帧时（默认关闭，用户自己在面板里勾）----
+        /// <summary>中位帧时（毫秒）：相邻两次 Present 的间隔，取 1 秒窗口的中位数。</summary>
+        public double FrameTimeMs;
+        /// <summary>最慢 5% 帧的帧时，给 tooltip 用；浮窗上只显示中位数。</summary>
+        public double FrameTimeP95Ms;
+        public bool FrameTimeOk;
+        public int FrameTimeSamples;
+        public string FrameTimeDetail = "";
     }
 
     /// <summary>
@@ -285,7 +285,8 @@ namespace PerfOverlay.Services
             if (Frames.PresentMonFound && PrivilegeHelper.CanCaptureFrames)
             {
                 ClearResidualSessions("启动前");
-                Frames.CaptureLatency = _settings != null && _settings.ShowDisplayLatency;
+                // 0.9.8 起界面不再提供出屏延迟，只解析帧时（与 FPS 同一批样本，零额外开销）。
+                Frames.CaptureLatency = false;
                 _framesStarted = Frames.Start();
                 if (!_framesStarted && Frames.LastError.Length > 0) _framesWhy = Frames.LastError;
             }
@@ -306,9 +307,10 @@ namespace PerfOverlay.Services
         public void ApplySettings(AppSettings settings)
         {
             lock (_settingsGate) { _settings = settings.Clone(); }
-            // 延迟这一列要不要解析，直接告诉引擎：关掉时每帧少切一次列。
-            // 只切解析开关，不重启 PresentMon —— v1_metrics 本来每行就带着这一列。
-            Frames.CaptureLatency = settings != null && settings.ShowDisplayLatency;
+            // 0.9.8 起不再解析出屏延迟（msUntilDisplayed）：它在独立翻转 / 全屏独占下
+            // 系统本来就不上报，留着只是每帧白切一次列。帧时取自 msBetweenPresents，
+            // 是 FPS 已经在读的那一列，不需要开关。
+            Frames.CaptureLatency = false;
         }
 
         private void Loop()
@@ -503,27 +505,24 @@ namespace PerfOverlay.Services
             snap.FpsMessage = f.Message;
             if (!snap.FpsOk && snap.FpsMessage.Length == 0) snap.FpsMessage = FramesDiagnostic;
 
-            // 显示延迟：只有开了才有内容。拿不到就把原因给出去 —— 这条链路
-            // 在独立翻转 / 覆盖层 / Electron 上本来就追不到显示环节，不是故障。
-            if (s != null && s.ShowDisplayLatency)
+            // FT 帧时：与 FPS 同源（同一个 1 秒窗口里的帧间隔），所以全屏独占 / 独立翻转
+            // 一样有值 —— 这正是它取代出屏延迟的原因。拿不到时把同一句失败原因给出去。
+            if (s != null && s.ShowFrameTime)
             {
-                snap.LatencyOk = f.LatencyOk && PrivilegeHelper.CanCaptureFrames && Frames.IsRunning;
-                snap.LatencyMs = f.LatencyP50Ms;
-                snap.LatencyP95Ms = f.LatencyP95Ms;
-                snap.LatencySamples = f.LatencySamples;
-                if (snap.LatencyOk)
-                {
-                    snap.LatencyDetail = string.Format(
-                        "显示延迟：Present 到出屏的中位数 {0:0.0} ms（P95 {1:0.0} ms，{2}/{3} 帧样本）&#10;"
-                        + "体感参考：8 ms 以内几乎无感 · 15 ms 顺畅 · 25 ms 轻微发钝 · 40 ms 以上明显拖手",
-                        f.LatencyP50Ms, f.LatencyP95Ms, f.LatencySamples, f.LatencyWindowFrames);
-                }
-                else
-                {
-                    snap.LatencyDetail = f.LatencyMessage.Length > 0
-                        ? f.LatencyMessage
-                        : (f.Message.Length > 0 ? f.Message : FramesDiagnostic);
-                }
+                bool ok = f.Available && snap.FpsOk && f.FrameTimeMs > 0;
+                snap.FrameTimeOk = ok;
+                snap.FrameTimeMs = f.FrameTimeMs;
+                snap.FrameTimeP95Ms = f.FrameTimeP95Ms;
+                snap.FrameTimeSamples = f.FrameTimeSamples;
+
+                snap.FrameTimeDetail = ok
+                    ? string.Format(
+                        "帧时：相邻两次 Present 的间隔，中位数 {0:0.0} ms（≈{1:0} FPS）&#10;"
+                        + "最慢 5% 帧 {2:0.0} ms · 窗口内 {3} 帧&#10;"
+                        + "参考：≤6.9 很顺(144+) · ≤11.1 顺(90+) · ≤16.7 够用(60) · ≤33.3 能感到节奏(30) · >50 明显卡",
+                        f.FrameTimeMs, f.FrameTimeMs > 0 ? 1000.0 / f.FrameTimeMs : 0,
+                        f.FrameTimeP95Ms, f.FrameTimeSamples)
+                    : snap.FpsMessage;
             }
 
             return snap;
@@ -1088,12 +1087,11 @@ namespace PerfOverlay.Services
             if (!Diagnostic) return;
             try
             {
-                // 延迟那一列单独取：UI 开关关着的时候 snap.Latency* 是空的，
-                // 但排障恰恰需要知道「系统到底给没给数」，所以直接问引擎。
+                // 帧时单独取：UI 开关关着的时候 snap.FrameTime* 是空的，
+                // 但排障需要知道「采集出来的帧间隔到底是多少」，所以直接问引擎。
                 var fs = Frames.Snapshot();
-                string lat = string.Format("lat={0}/{1} zero={2}/{3} p50={4:0.0} mode=[{5}]",
-                    fs.LatencySamples, fs.LatencyWindowFrames, fs.LatencyZeroFrames,
-                    fs.LatencyWindowFrames, fs.LatencyP50Ms, fs.PresentMode ?? "");
+                string ft = string.Format("ft={0:0.0} p95={1:0.0} n={2}",
+                    fs.FrameTimeMs, fs.FrameTimeP95Ms, fs.FrameTimeSamples);
 
                 string line = string.Format(
                     "{0:HH:mm:ss} tgt={1}({2}) pmRun={3} avail={4} fps={5:0.0} low={6:0.0} " +
@@ -1102,7 +1100,7 @@ namespace PerfOverlay.Services
                     DateTime.Now, Frames.TargetPid, snap.TargetProcess, Frames.IsRunning,
                     snap.FpsOk, snap.Fps, snap.LowFps, snap.FrameCount,
                     Frames.LinesSeen, Frames.SessionName,
-                    snap.FpsMessage, Frames.LastError, Frames.StderrText, Frames.QueueStat, lat,
+                    snap.FpsMessage, Frames.LastError, Frames.StderrText, Frames.QueueStat, ft,
                     _health, _recoverCount, _recoverFails);
 
                 File.AppendAllText(_frameDiagPath, line + Environment.NewLine);

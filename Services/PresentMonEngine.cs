@@ -31,6 +31,13 @@ namespace PerfOverlay.Services
         public int LatencyZeroFrames;
         /// <summary>采集器报的呈现路径（PresentMon 的 PresentMode 列），取最近一帧。</summary>
         public string PresentMode;
+
+        // ---- FT 帧时：相邻两次 Present 的间隔（毫秒）----
+        // 与 FPS 同源（同一个 1 秒窗口里的帧间隔），所以全屏独占、独立翻转时同样有值，
+        // 不像出屏延迟那样依赖系统上报显示时刻。它只说节拍，不含渲染排队与出屏。
+        public double FrameTimeMs;      // 窗口内帧间隔的中位数
+        public double FrameTimeP95Ms;   // 最慢 5% 帧
+        public int FrameTimeSamples;    // 参与统计的帧数
     }
 
     /// <summary>
@@ -175,6 +182,8 @@ namespace PerfOverlay.Services
         // 求分位数时的临时缓冲：复用一块，避免每 500ms 在 GC 上扔一个大数组。
         // 只在 _gate 内使用，所以不需要额外加锁。
         private readonly List<double> _delayScratch = new List<double>(4096);
+        /// <summary>帧时（帧间隔）分位数的临时缓冲，同样是复用。</summary>
+        private readonly List<double> _frameScratch = new List<double>(4096);
 
         private string _lastError = "";
 
@@ -784,6 +793,7 @@ namespace PerfOverlay.Services
                 double lastTs = 0;
 
                 var times = q.Times;
+                _frameScratch.Clear();
                 for (int i = times.Count - 1; i >= 0; i--)
                 {
                     var item = times[i];
@@ -791,6 +801,8 @@ namespace PerfOverlay.Services
                     inWin++;
                     if (item.Key < firstTs) firstTs = item.Key;
                     if (item.Key > lastTs) lastTs = item.Key;
+                    // Value 就是这一帧的帧间隔（ms），与 FPS 同一个窗口、同一批样本
+                    _frameScratch.Add(item.Value);
                 }
 
                 if (inWin >= MinFramesForFps)
@@ -801,6 +813,14 @@ namespace PerfOverlay.Services
                     if (fps < 0) fps = 0;
                     snap.Fps = fps;
                     snap.Available = true;
+
+                    // ---- FT 帧时：中位数 + 最慢 5% ----
+                    // 用中位数而不是平均值：平均值会被单次卡顿（一帧 200ms）拉飞，
+                    // 中位数代表「平常每帧间隔多久」，这才是看流畅度该看的数。
+                    _frameScratch.Sort();
+                    snap.FrameTimeMs = PercentileOf(_frameScratch, 0.50);
+                    snap.FrameTimeP95Ms = PercentileOf(_frameScratch, 0.95);
+                    snap.FrameTimeSamples = _frameScratch.Count;
                 }
 
                 // ---- 1% Low：最差 1% 帧的「平均帧时间」取倒数（算法见 FrameStats）----

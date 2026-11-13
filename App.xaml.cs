@@ -481,6 +481,8 @@ namespace PerfOverlay
             }
 
             // ---- 显示延迟自检：自建一个持续出帧的窗口当靶子，量 msUntilDisplayed ----
+            // 0.9.8 起界面不再暴露「显示延迟」（独立翻转 / 全屏独占上系统不报），
+            // 这个探针保留：要确认「某条渲染路径到底给不给显示时刻」时，只有它能给证据。
             // 放在提权逻辑之后（不像别的探针那样提前 return）：读 ETW 必须管理员，
             // 提前返回就永远轮不到提权那一跳。
             if (HasArg(e.Args, "--latency-test"))
@@ -1075,7 +1077,8 @@ namespace PerfOverlay
 
             bool colA = true, colB = true, rowsTied = true, textFits = true;
             var tight = new StringBuilder();
-            // 0.9.7 加了「显示延迟」之后是 10 项：左右各 5 项，两列一一对应。
+            // 0.9.7 加了第五个开关之后是 10 项：左右各 5 项，两列一一对应
+            // （左列第 5 项 = FT 帧时，0.9.8 起取代原来的显示延迟，位置与数量都没变）。
             // 早先是 9 项（左 4 右 5），左列多一项后这个下标必须跟着改 ——
             // 写死 4 的话右列起点会落到左列第 5 项上，直接报成「两列错位」。
             const int leftCol = 5;
@@ -1844,7 +1847,7 @@ namespace PerfOverlay
                 var s = SettingsStore.Load();
                 s.ShowCpu = s.ShowMemory = s.ShowFps = s.ShowLowFps = s.ShowVram = true;
                 s.ShowClock = s.ShowGpu = s.ShowCpuTemp = s.ShowGpuTemp = true;   // 全开才量得到最宽的极端情况
-                s.ShowDisplayLatency = true;                                      // 九项全开，宽度取最坏情况
+                s.ShowFrameTime = true;                                           // 九项全开，宽度取最坏情况
                 s.SizeMode = size;
                 s.OffsetX = s.OffsetY = 0;
 

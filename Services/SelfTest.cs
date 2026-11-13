@@ -66,6 +66,72 @@ namespace PerfOverlay.Services
         /// 一起停掉 → PresentMon 进程还活着、会话没了、stdout 恒 0 行，浮窗永久 N/A。
         /// 这条规则用真值表钉住，不再依赖「看日志里有没有报错」。
         /// </summary>
+        /// <summary>
+        /// 0.9.8 把「显示延迟」换成「FT 帧时」：C# 字段改名，JSON 键靠 DataMember(Name=...)
+        /// 继续用旧的 ShowDisplayLatency。DataContractJsonSerializer 只认 Name、不认字段名，
+        /// 所以老配置里的开关能原样接过来 —— 但这条只有真跑一遍才算验证过。
+        /// 反过来也要验证：写回去仍然是旧键名，不能让老版本读新文件时丢掉这个开关。
+        /// </summary>
+        private static void RunSettingsMigrationChecks(Action<string> w)
+        {
+            w("--- 配置迁移（显示延迟 → FT 帧时，JSON 键沿用旧名）---");
+            int pass = 0, fail = 0;
+
+            var ser = new System.Runtime.Serialization.Json.DataContractJsonSerializer(typeof(AppSettings));
+
+            Action<string, bool> readCase = (json, expect) =>
+            {
+                bool got;
+                try
+                {
+                    using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(json)))
+                    {
+                        var o = (AppSettings)ser.ReadObject(ms);
+                        got = o.ShowFrameTime;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    w("  [失败] " + json + " → 解析异常 " + ex.Message);
+                    fail++;
+                    return;
+                }
+
+                bool ok = got == expect;
+                if (ok) pass++; else fail++;
+                w(string.Format("  [{0}] {1} → ShowFrameTime={2}（期望 {3}）",
+                    ok ? "通过" : "失败", json, got, expect));
+            };
+
+            readCase("{\"ShowDisplayLatency\":true}", true);    // 老配置开着 → 帧时开着
+            readCase("{\"ShowDisplayLatency\":false}", false);  // 老配置关着 → 帧时关着
+            readCase("{}", false);                              // 首启无配置 → 默认关
+
+            // 写回去必须还是旧键名：老版本程序读新配置时，这一格不能凭空消失
+            try
+            {
+                var probe = new AppSettings { ShowFrameTime = true };
+                using (var ms = new MemoryStream())
+                {
+                    ser.WriteObject(ms, probe);
+                    string text = Encoding.UTF8.GetString(ms.ToArray());
+                    bool ok = text.IndexOf("\"ShowDisplayLatency\"", StringComparison.Ordinal) >= 0
+                              && text.IndexOf("ShowFrameTime", StringComparison.Ordinal) < 0;
+                    if (ok) pass++; else fail++;
+                    w(string.Format("  [{0}] 写回仍用旧键名 ShowDisplayLatency（不含 ShowFrameTime）",
+                        ok ? "通过" : "失败"));
+                }
+            }
+            catch (Exception ex)
+            {
+                fail++;
+                w("  [失败] 写回异常 " + ex.Message);
+            }
+
+            w(string.Format("  配置迁移：通过 {0} 项，失败 {1} 项", pass, fail));
+            w("");
+        }
+
         private static void RunEtwKeepChecks(Action<string> w)
         {
             int pass = 0, fail = 0;
@@ -186,11 +252,12 @@ namespace PerfOverlay.Services
             var cfg = SettingsStore.Load();
             w(string.Format("SchemaVersion={0}  ShowCpuTemp={1}  ShowGpuTemp={2}  （旧字段 ShowTemp={3}）",
                 cfg.SchemaVersion, cfg.ShowCpuTemp, cfg.ShowGpuTemp, cfg.ShowTemp));
-            w(string.Format("显示项: CPU={0} 内存={1} FPS={2} 1%Low={3} 显存={4} GPU={5} CT={6} GT={7} 时间={8}",
+            w(string.Format("显示项: CPU={0} 内存={1} FPS={2} 1%Low={3} FT帧时={4} 显存={5} GPU={6} CT={7} GT={8} 时间={9}",
                 OnOff(cfg.ShowCpu), OnOff(cfg.ShowMemory), OnOff(cfg.ShowFps), OnOff(cfg.ShowLowFps),
-                OnOff(cfg.ShowVram), OnOff(cfg.ShowGpu), OnOff(cfg.ShowCpuTemp), OnOff(cfg.ShowGpuTemp),
-                OnOff(cfg.ShowClock)));
+                OnOff(cfg.ShowFrameTime), OnOff(cfg.ShowVram), OnOff(cfg.ShowGpu),
+                OnOff(cfg.ShowCpuTemp), OnOff(cfg.ShowGpuTemp), OnOff(cfg.ShowClock)));
             w("配置来源: " + (File.Exists(SettingsStore.FilePath) ? SettingsStore.FilePath : "无配置文件（首启默认值）"));
+            RunSettingsMigrationChecks(w);
             w(string.Format("界面主题: 设置={0}  实际生效={1}  系统偏好深色={2}",
                 string.IsNullOrEmpty(cfg.Theme) ? "(未设置)" : cfg.Theme,
                 ThemeManager.Effective,

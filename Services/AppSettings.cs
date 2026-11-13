@@ -39,13 +39,14 @@ namespace PerfOverlay.Services
         [DataMember(Order = 26)] public bool ShowGpuTemp = false;  // GT：GPU 温度
 
         /// <summary>
-        /// 显示延迟（Present 调用 → 该帧真的被扫到屏幕上，毫秒）。
-        /// 默认关闭：这个数只有「能追踪到显示环节」的渲染路径才给得出来
-        /// （独立翻转 / 覆盖层 / Electron 常常整段拿不到），开着会有不少 `--`，
-        /// 不知道这条链路的人只会以为程序坏了。想看的人自己在面板里勾。
-        /// 取数不依赖任何显卡厂商的 SDK —— 走 PresentMon 的 ETW 事件，A/N/I 一视同仁。
+        /// FT 帧时：相邻两次 Present 的间隔（毫秒），取 1 秒窗口的中位数。
+        /// 0.9.8 起取代原来的「显示延迟」——出屏延迟在独立翻转 / 全屏独占下系统不上报，
+        /// 而帧时与 FPS 同源，任何路径都有值。
+        ///
+        /// JSON 键名沿用旧的 ShowDisplayLatency：DataContractJsonSerializer 按 Name 匹配，
+        /// 老配置里那一格的开关状态会原样接过来，升级后不会凭空多出一项、也不会丢选择。
         /// </summary>
-        [DataMember(Order = 29)] public bool ShowDisplayLatency = false;
+        [DataMember(Name = "ShowDisplayLatency", Order = 29)] public bool ShowFrameTime = false;
 
         /// <summary>配置结构版本。1 = CT/GT 已拆分。新对象直接是 1，旧文件读出来是 0。</summary>
         [DataMember(Order = 27)] public int SchemaVersion = 1;
@@ -131,7 +132,7 @@ namespace PerfOverlay.Services
         public bool AnyMetricVisible()
         {
             return ShowCpu || ShowMemory || ShowFps || ShowLowFps || ShowVram
-                || ShowClock || ShowGpu || ShowCpuTemp || ShowGpuTemp || ShowDisplayLatency;
+                || ShowClock || ShowGpu || ShowCpuTemp || ShowGpuTemp || ShowFrameTime;
         }
 
         /// <summary>是否需要向 nvml.dll 要数据（GPU 温度与 GPU 利用率共用一份句柄）。</summary>

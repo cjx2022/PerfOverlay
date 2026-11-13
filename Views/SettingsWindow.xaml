@@ -195,27 +195,33 @@
                                       Margin="0,0,0,10"
                                       Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
 
-                            <!-- 显示延迟：默认关。取数走 PresentMon 的 ETW，
-                                 不依赖任何显卡厂商 SDK，NVIDIA / AMD / Intel 通用。
-                                 默认关只是因为多开一路采集，不是因为取不到数。
-                                 小圈里只留体感参考，不写适用范围。 -->
+                            <!-- FT 帧时：0.9.8 起取代「显示延迟」。
+                                 出屏延迟要系统上报「这一帧什么时候出现在屏幕上」，独立翻转 /
+                                 全屏独占时系统根本不给，只能长期显示空值；帧时取自
+                                 msBetweenPresents，与帧数同一批样本，任何渲染路径都有值。
+                                 小圈里放「什么是帧时」+ 体感阈值。 -->
                             <StackPanel Grid.Row="4" Grid.Column="0" Orientation="Horizontal">
-                                <CheckBox x:Name="ChkLatency"
-                                          Style="{StaticResource Switch}" Content="显示延迟"
-                                          ToolTip="Present 调用到画面真正出现在屏幕上的毫秒数（中位数）"
+                                <CheckBox x:Name="ChkFrameTime"
+                                          Style="{StaticResource Switch}" Content="FT 帧时"
+                                          ToolTip="相邻两次 Present 的间隔（毫秒），取 1 秒窗口的中位数"
                                           Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
                                 <Border Style="{StaticResource InfoTip}">
                                     <TextBlock Text="i" FontSize="9" FontWeight="Bold"
                                                HorizontalAlignment="Center" VerticalAlignment="Center"
                                                Foreground="{DynamicResource TextHint}" />
                                     <Border.ToolTip>
-                                        <ToolTip MaxWidth="330">
+                                        <ToolTip MaxWidth="340">
                                             <StackPanel>
-                                                <TextBlock Text="体感参考（中位数）" FontWeight="SemiBold" Margin="0,0,0,4" />
+                                                <TextBlock Text="什么是帧时" FontWeight="SemiBold" Margin="0,0,0,4" />
                                                 <TextBlock TextWrapping="Wrap"
-                                                           Text="· ≤ 8 ms　几乎无感&#10;· 8–17 ms　顺畅（60Hz 一帧约 16.7 ms）&#10;· 17–33 ms　轻微发钝，快速转视角能察觉&#10;· 33–50 ms　明显拖手&#10;· &gt; 50 ms　卡顿可感知" />
+                                                           Text="相邻两次画面提交（Present）之间隔了多少毫秒，取最近 1 秒的中位数。它等于帧率的倒数：16.7 ms ≈ 60 FPS，6.9 ms ≈ 144 FPS。" />
+                                                <TextBlock TextWrapping="Wrap" Margin="0,6,0,0"
+                                                           Text="帧时越稳越顺；平均值看不出卡顿，尖峰才是卡顿。悬停可看最慢 5% 帧的数值。" />
+                                                <TextBlock Text="体感参考（中位帧时）" FontWeight="SemiBold" Margin="0,10,0,4" />
+                                                <TextBlock TextWrapping="Wrap"
+                                                           Text="· ≤ 6.9 ms　很顺（≥144 FPS）&#10;· 6.9–11.1 ms　顺（90–144 FPS）&#10;· 11.1–16.7 ms　够用（60–90 FPS）&#10;· 16.7–33.3 ms　能感到节奏（30–60 FPS）&#10;· 33.3–50 ms　明显卡（20–30 FPS）&#10;· &gt; 50 ms　不可玩（&lt;20 FPS）" />
                                                 <TextBlock TextWrapping="Wrap" Margin="0,8,0,0" Opacity="0.75"
-                                                           Text="这是出屏延迟，不含鼠标/手柄到游戏引擎的那一段；跟 NVIDIA Reflex 的端到端数字不能直接比。" />
+                                                           Text="帧时只说画面提交的节拍，不含渲染排队、合成与出屏，所以它比真实延迟小；不能当成输入延迟来比。" />
                                             </StackPanel>
                                         </ToolTip>
                                     </Border.ToolTip>
