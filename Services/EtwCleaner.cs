@@ -33,8 +33,16 @@ namespace PerfOverlay.Services
             Environment.GetFolderPath(Environment.SpecialFolder.Windows),
             @"System32\LogFiles\WMI\RtBackup");
 
-        /// <summary>本程序的 ETW 会话前缀，与 PresentMonEngine 里生成的保持一致。</summary>
-        public const string SessionPrefix = "PerfOverlay_";
+        /// <summary>
+        /// 本程序的 ETW 会话前缀。
+        ///
+        /// 注意这里**没有**尾部下划线：主程序的会话叫 `PerfOverlay_xxxxxxxxxx`，
+        /// 而 `--pm-cols` 探针起的叫 `PerfOverlayCols_xxxxxxxx`。早先写成
+        /// `"PerfOverlay_"` 时前缀匹配不上探针那条，探针强杀 PresentMon 留下的会话
+        /// 就永远清不掉 —— 它一直占着 DXGI 的事件通道，主程序之后无论重建多少次
+        /// 会话都只能读到 0 行，表现为「帧数永久 N/A、延迟一直 --」。
+        /// </summary>
+        public const string SessionPrefix = "PerfOverlay";
 
         /// <summary>自动兜底的触发线，低于这个体量不值得动系统目录。</summary>
         public const long AutoThresholdBytes = 256L * 1024 * 1024;

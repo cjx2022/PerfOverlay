@@ -90,6 +90,10 @@ namespace PerfOverlay.Services
             finally
             {
                 try { if (p != null && !p.HasExited) { p.Kill(); p.WaitForExit(1500); } } catch (Exception) { }
+                // 强杀不会让内核立刻回收会话。探针用的是 PerfOverlayCols_* 名字，
+                // 留着它就会一直占着 DXGI 的事件通道：之后主程序不管重建多少次会话，
+                // 都只能读到 0 行（帧数永久 N/A）。所以退出前显式把这条会话停掉。
+                TerminateSession(pm, session);
             }
 
             List<string> snap;
@@ -220,6 +224,35 @@ namespace PerfOverlay.Services
             sb.AppendLine(string.Format("    {0,-24} 有效 {1}/{2}（{3}）  均值 {4}  最大 {5:0.00}",
                 name, valid, n,
                 n > 0 ? (100.0 * valid / n).ToString("0.0") + "%" : "0%", avg, max));
+        }
+
+        /// <summary>
+        /// 停掉探针自己建的那条 ETW 会话。
+        ///
+        /// PresentMon 的 `--terminate_existing_session` 是「先拆掉同名会话再退出」，
+        /// 正好用来做优雅收尾；它不需要另起一个长驻采集进程。
+        /// 失败不抛：探针本来就是诊断用的，收尾失败也不该盖住报告。
+        /// </summary>
+        private static void TerminateSession(string pm, string session)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = pm,
+                    Arguments = "--session_name " + session + " --terminate_existing_session --no_csv",
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using (var c = Process.Start(psi))
+                {
+                    if (c != null)
+                    {
+                        if (!c.WaitForExit(1500)) { try { c.Kill(); } catch (Exception) { } }
+                    }
+                }
+            }
+            catch (Exception) { }
         }
 
         private static int Write(StringBuilder sb, int code)

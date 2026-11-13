@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 
@@ -120,6 +121,9 @@ namespace PerfOverlay.Services
 
         private string _frameDiagPath;
 
+        /// <summary>排障日志出口（由 App 接到 perfoverlay-error.log）。未接时静默。</summary>
+        public Action<string> Trace;
+
         /// <summary>在后台线程触发。</summary>
         public event EventHandler<MetricsSnapshot> Updated;
 
@@ -214,6 +218,7 @@ namespace PerfOverlay.Services
             // 权限够才启动 PresentMon：否则子进程会立刻报 access denied 并刷屏
             if (Frames.PresentMonFound && PrivilegeHelper.CanCaptureFrames)
             {
+                ClearResidualSessions("启动前");
                 Frames.CaptureLatency = _settings != null && _settings.ShowDisplayLatency;
                 _framesStarted = Frames.Start();
                 if (!_framesStarted && Frames.LastError.Length > 0) _framesWhy = Frames.LastError;
@@ -790,7 +795,9 @@ namespace PerfOverlay.Services
             return _nvml.TryRead(out temp, out util, out tempOk, out utilOk);
         }
 
-        /// <summary>PresentMon 掉了就拉起来，每 5 秒最多试一次（由调用点的 tick 控制）。</summary>
+        /// <summary>
+        /// PresentMon 掉了就拉起来，每 5 秒最多试一次（由调用点的 tick 控制）。
+        /// </summary>
         private void EnsureFramesAlive()
         {
             try
@@ -798,7 +805,33 @@ namespace PerfOverlay.Services
                 if (!Frames.PresentMonFound) return;
                 if (!PrivilegeHelper.CanCaptureFrames) return;
                 if (Frames.IsRunning) return;
+                ClearResidualSessions("拉起前");
                 Frames.Start();
+            }
+            catch (Exception) { }
+        }
+
+        /// <summary>
+        /// 清掉本程序遗留的 ETW 实时会话（`PerfOverlay_*` / `PerfOverlayCols_*`）。
+        ///
+        /// 为什么每次启动采集前都要扫一遍：残留会话不会随进程消失而立刻释放，
+        /// 它会继续占着 DXGI 的事件通道。新会话照样能建起来、PresentMon 进程也活着
+        /// （`pmRun=True`），但**一行事件都收不到** —— 现场日志里就是 `lines=0`、
+        /// 队列全空，UI 上却报「采集被拦截」，看起来像反作弊，实际是自己留下的坑。
+        /// 清一次的成本只是一次 logman 查询，只在启动/重建采集时发生。
+        /// </summary>
+        private void ClearResidualSessions(string when)
+        {
+            try
+            {
+                if (!PrivilegeHelper.CanCaptureFrames) return;
+                var stopped = new List<string>();
+                EtwCleaner.StopResidualSessions(stopped);
+                if (stopped.Count == 0) return;
+                string msg = when + "清掉残留 ETW 会话 " + stopped.Count + " 个 ["
+                             + string.Join(",", stopped.ToArray()) + "]";
+                var t = Trace;
+                if (t != null) { try { t(msg); } catch (Exception) { } }
             }
             catch (Exception) { }
         }
@@ -848,6 +881,9 @@ namespace PerfOverlay.Services
 
                 _starvedSince = DateTime.MinValue;
                 Frames.Stop();
+                // 光停自己那条会话不够：僵死的旧会话（包括探针留下的 PerfOverlayCols_*）
+                // 会继续占着 DXGI 通道，重建出来的新会话依旧 0 行，于是每 60 秒白转一圈。
+                ClearResidualSessions("重建前");
                 Frames.Start();
             }
             catch (Exception) { }

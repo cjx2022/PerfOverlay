@@ -494,6 +494,7 @@ namespace PerfOverlay
 
             _host = new MonitorHost(MonitorHost.PresentMonPath());
             _host.Diagnostic = _diagnostic;
+            _host.Trace = m => WriteLog("INF", "Frames", m);
             _host.Updated += OnMetricsUpdated;
 
             _overlay = new OverlayWindow();
