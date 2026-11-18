@@ -461,7 +461,8 @@
                             <TextBlock Grid.Row="0" Text="浮窗位置" FontSize="12"
                                        VerticalAlignment="Center"
                                        Foreground="{DynamicResource TextSecondary}" />
-                            <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal"
+                            <StackPanel Grid.Row="0" Grid.Column="1" x:Name="PosRow"
+                                        Orientation="Horizontal"
                                         HorizontalAlignment="Right" Margin="12,0,0,0">
                                 <RadioButton x:Name="PosLeft" Content="左上" Style="{StaticResource SegButton}"
                                              Click="OnPositionPicked" />
@@ -474,8 +475,15 @@
                             <TextBlock Grid.Row="1" Text="浮窗显示快捷键" FontSize="12"
                                        VerticalAlignment="Center" Margin="0,10,0,0"
                                        Foreground="{DynamicResource TextSecondary}" />
+                            <!-- 输入框宽度跟着上一行「左上 / 中上 / 右上」那组按钮走：
+                                 右端与「右上」右边界对齐，左端与「左上」左边界对齐。
+                                 撑满整列会明显长出一截（比按钮组多 60 多 DIP），看着就不是一组控件。
+                                 绑 ActualWidth 而不是写死数值：按钮宽度由字号和内边距决定，
+                                 写死一次之后换字号就再对不上了。 -->
                             <Border Grid.Row="1" Grid.Column="1" x:Name="HotkeyBox" Height="28"
-                                    Margin="12,10,0,0"
+                                    HorizontalAlignment="Right"
+                                    Width="{Binding ActualWidth, ElementName=PosRow}"
+                                    Margin="0,10,0,0"
                                     Background="{DynamicResource InputBg}"
                                     BorderBrush="{DynamicResource WindowBorder}" BorderThickness="1"
                                     CornerRadius="6" Cursor="Hand" Focusable="True"

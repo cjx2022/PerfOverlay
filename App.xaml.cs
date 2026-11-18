@@ -993,7 +993,7 @@ namespace PerfOverlay
             var posBtns = w.PositionButtons();
             double posTop = posBtns[0].TranslatePoint(new System.Windows.Point(0, 0), w).Y;
             bool posSameRow = true, posSameW = true, posFits = true;
-            double posRight = 0;
+            double posRight = 0, posLeft = double.MaxValue;
             for (int i = 0; i < posBtns.Length; i++)
             {
                 var b = posBtns[i];
@@ -1003,16 +1003,20 @@ namespace PerfOverlay
                 double needW = b.DesiredSize.Width - b.Margin.Left - b.Margin.Right;
                 if (b.ActualWidth + 0.5 < needW) posFits = false;
                 if (p.X + b.ActualWidth > posRight) posRight = p.X + b.ActualWidth;
+                if (p.X < posLeft) posLeft = p.X;
             }
             if (!posSameRow || !posSameW || !posFits) fails++;
 
-            // 热键框：与位置按钮组右端对齐、够放长组合、不越卡片右界
+            // 热键框：左右两端都要与「左上 … 右上」那组按钮对齐、够放长组合、不越卡片右界。
+            // 只卡右端是不够的 —— 早先它撑满整列，右端对齐、左端比「左上」多探出 65 DIP，
+            // 看着像两个不相干的控件；而「撑满」在截图里毫无异常，只有量左端才暴露。
             var hk = w.HotkeyBoxElement;            var hkPos = hk.TranslatePoint(new System.Windows.Point(0, 0), w);
             double behaviorRight = rects[2].Right - 15.0;   // 卡片左右内边距 15
             bool hkInside = hkPos.X + hk.ActualWidth <= behaviorRight + 0.5;
             bool hkRightAligned = Math.Abs((hkPos.X + hk.ActualWidth) - posRight) <= 1.0;
+            bool hkLeftAligned = Math.Abs(hkPos.X - posLeft) <= 1.0;
             bool hkWide = hk.ActualWidth >= 120.0;
-            if (!hkInside || !hkRightAligned || !hkWide) fails++;
+            if (!hkInside || !hkRightAligned || !hkLeftAligned || !hkWide) fails++;
 
             // 主题三档：带缩略图之后明显变宽，最容易「跟随系统」被挤窄或顶出卡片右界。
             // 缩略图是固定尺寸的 Border，一旦被压缩会变成一条竖线，光看截图不一定看得出来。
@@ -1253,9 +1257,9 @@ namespace PerfOverlay
             sb.AppendLine(string.Format("   卡片对齐  = {0}", align ? "OK" : "FAIL"));
             sb.AppendLine(string.Format("   位置三档  = 同行 {0} / 等宽 {1} / 文字够 {2}（各宽 {3:0.0}）",
                 posSameRow ? "OK" : "FAIL", posSameW ? "OK" : "FAIL", posFits ? "OK" : "FAIL", posBtns[0].ActualWidth));
-            sb.AppendLine(string.Format("   热键框    = x {0:0.0}..{1:0.0} / 按钮组右端 {2:0.0} / 卡右界 {3:0.0} / 宽 {4:0.0} => {5}",
-                hkPos.X, hkPos.X + hk.ActualWidth, posRight, behaviorRight, hk.ActualWidth,
-                (hkInside && hkRightAligned && hkWide) ? "OK" : "FAIL（不对齐或越界）"));
+            sb.AppendLine(string.Format("   热键框    = x {0:0.0}..{1:0.0} / 按钮组 {2:0.0}..{3:0.0} / 卡右界 {4:0.0} / 宽 {5:0.0} => {6}",
+                hkPos.X, hkPos.X + hk.ActualWidth, posLeft, posRight, behaviorRight, hk.ActualWidth,
+                (hkInside && hkRightAligned && hkLeftAligned && hkWide) ? "OK" : "FAIL（左右未同时对齐或越界）"));
             sb.AppendLine(string.Format("   全部按钮  = {0} 个，压缩 {1} / 越界 {2} => {3}",
                 btnChecked, squeezed, overflow, btnsOk ? "OK" : "FAIL"));            if (!btnsOk && badBtns.Length > 0) sb.AppendLine("     明细：" + badBtns.ToString().Trim());
             sb.AppendLine(string.Format("   主题三档  = 同行 {0} / 未被压窄 {1} / 不越右界 {2}（右端 {3:0.0} ≤ {4:0.0}）=> {5}",
