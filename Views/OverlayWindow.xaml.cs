@@ -23,9 +23,6 @@ namespace PerfOverlay.Views
         private bool _dragging;
         private Point _lastScreenPoint;
 
-        /// <summary>当前用于 logo 的那套图标是深色版还是浅色版（用于主题切换后重建）。</summary>
-        private bool _logoDark;
-
         private const int GWL_EXSTYLE = -20;
         private const int WS_EX_TOOLWINDOW = 0x00000080;
         private const int WS_EX_TRANSPARENT = 0x00000020;
@@ -111,24 +108,15 @@ namespace PerfOverlay.Views
             _settings = s;
             Opacity = Math.Max(0.3, Math.Min(1.0, s.Opacity));
 
-            // 主题切换也要重建：logo 有深浅两套，只换配色不重建的话，
-            // 浮窗上的 logo 会一直停在旧主题那一版（其余文字用的是配置里的颜色，不受影响）。
-            bool themeFlip = ThemeManager.IsDark != _logoDark;
-
-            if (rebuildRows || themeFlip)
+            if (rebuildRows)
             {
                 BuildGroups();
 
-                // 只有「显示项变了」才重新贴角：单纯换主题时宽度不变，
-                // 重新定位等于把用户手拖的位置又拽回档位里。
-                if (rebuildRows)
-                {
-                    // 开关显示项 = 行重建 = 宽度变。SizeToContent 固定左上角往右长，
-                    // 贴角的浮窗会被顶出屏幕外。语义上开关等价于「重新点一次当前
-                    // 位置按钮」：拖过的自定义位置不保留（档位 -1 时回默认右上）。
-                    UpdateLayout();
-                    if (mode > -2) AlignHorizontal(mode < 0 ? 2 : mode);
-                }
+                // 开关显示项 = 行重建 = 宽度变。SizeToContent 固定左上角往右长，
+                // 贴角的浮窗会被顶出屏幕外。语义上开关等价于「重新点一次当前
+                // 位置按钮」：拖过的自定义位置不保留（档位 -1 时回默认右上）。
+                UpdateLayout();
+                if (mode > -2) AlignHorizontal(mode < 0 ? 2 : mode);
             }
 
             ApplyWindowStyle();
@@ -163,9 +151,6 @@ namespace PerfOverlay.Views
             // 每一项自带「数值宽度模板」：按该项上限定宽，既防抖动，又不会让
             // "144" 在按 100% 定的格子里右端空出一大截、把组间空隙撑得忽大忽小。
             // 时间不在这张表里：它固定排在最右、不带标签，见下面的 AddClockGroup。
-            // 左侧 logo：和数据行等高，跟着主题换深浅两套图标。
-            // 一行指标全关时不画 —— 空浮窗上留一个孤零零的 logo 没有意义。
-            if (_settings.AnyMetricVisible()) AddLogo(fs, groupGap);
 
             var items = new List<string[]>();
             if (_settings.ShowFps) items.Add(new[] { "fps", "FPS", "888" });
@@ -252,84 +237,6 @@ namespace PerfOverlay.Views
             RowsHost.Children.Add(root);
 
             _groups["time"] = new GroupUi { Root = root, Label = null, Value = val };
-        }
-
-        /// <summary>
-        /// 左侧 logo：与指标行同高、垂直居中，右侧留一个组间距。
-        ///
-        /// 深浅两套图标（和托盘、exe 图标同一份资源）：
-        ///   浅色主题 = 蓝底白折线，压在亮背景上也认得出；
-        ///   深色主题 = 近黑底白折线，黑块在暗背景上融掉，只剩白折线，正好当「暗底标记」。
-        /// 两套都自带底色，所以在浮窗这种「背景不确定」的场景里不需要再加描边。
-        /// 取帧按物理像素挑：150% 缩放下用 32px 帧而不是 16px 拉伸，边才不糊。
-        /// </summary>
-        private void AddLogo(double fs, double gapAfter)
-        {
-            bool dark = ThemeManager.IsDark;
-            _logoDark = dark;
-
-            double side = Math.Round(fs * 1.05);
-            if (side < 14) side = 14;
-
-            double dpi = 1.0;
-            try { dpi = VisualTreeHelper.GetDpi(this).DpiScaleX; } catch (Exception) { }
-            if (dpi <= 0) dpi = 1.0;
-
-            var src = LoadLogo(dark, (int)Math.Ceiling(side * dpi));
-            if (src == null) return;   // 资源缺失就当没有 logo，不影响指标显示
-
-            var img = new Image
-            {
-                Source = src,
-                Width = side,
-                Height = side,
-                Stretch = Stretch.Uniform,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, gapAfter, 0),
-                IsHitTestVisible = false
-            };
-            // 透明窗口默认的位图缩放是 Linear，小尺寸下边会发灰；
-            // 改成高质量重采样，白折线的边缘才是一条干净的线。
-            RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
-
-            RowsHost.Children.Add(img);
-        }
-
-        /// <summary>
-        /// 从内嵌 ico 里挑一帧当 logo。挑法：**不小于目标像素的最小一帧**，
-        /// 都不够大就用最大的那帧。直接取第一帧会拿到 16px，放大到 20+ DIP 就糊了。
-        /// </summary>
-        private static ImageSource LoadLogo(bool dark, int wantPx)
-        {
-            try
-            {
-                var asm = System.Reflection.Assembly.GetExecutingAssembly();
-                string name = dark ? "PerfOverlay.tray-dark.ico" : "PerfOverlay.tray-light.ico";
-                using (var st = asm.GetManifestResourceStream(name))
-                {
-                    if (st == null) return null;
-
-                    var dec = new IconBitmapDecoder(st, BitmapCreateOptions.PreservePixelFormat,
-                                                    BitmapCacheOption.OnLoad);
-                    BitmapFrame best = null;
-                    foreach (var f in dec.Frames)
-                    {
-                        if (best == null) { best = f; continue; }
-
-                        bool fEnough = f.PixelWidth >= wantPx;
-                        bool bEnough = best.PixelWidth >= wantPx;
-
-                        if (fEnough && !bEnough) best = f;
-                        else if (fEnough && bEnough && f.PixelWidth < best.PixelWidth) best = f;
-                        else if (!fEnough && !bEnough && f.PixelWidth > best.PixelWidth) best = f;
-                    }
-
-                    if (best == null) return null;
-                    if (best.CanFreeze) best.Freeze();
-                    return best;
-                }
-            }
-            catch (Exception) { return null; }
         }
 
         private static double StrokeWidth(double fs)

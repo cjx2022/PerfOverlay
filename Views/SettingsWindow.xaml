@@ -105,7 +105,13 @@
             <!-- ================= 标题栏（单行，高 40） ================= -->
             <Grid Grid.Row="0" Height="40" Background="{DynamicResource TitleBarBg}" MouseLeftButtonDown="OnTitleBarMouseDown">
                 <StackPanel Orientation="Horizontal" Margin="18,0" VerticalAlignment="Center">
-                    <TextBlock Text="性能浮窗" FontSize="13.5" FontWeight="SemiBold"
+                    <!-- 标题左侧的 logo：和托盘、exe 文件图标同源（内嵌 ico），
+                         深浅两套由代码按当前有效主题挑，XAML 里不写死图片路径。 -->
+                    <Image x:Name="ImgLogo" Width="16" Height="16" Margin="0,0,8,0"
+                           VerticalAlignment="Center" Stretch="Uniform"
+                           RenderOptions.BitmapScalingMode="HighQuality"
+                           IsHitTestVisible="False" />
+                    <TextBlock x:Name="TxtTitle" Text="性能浮窗" FontSize="13.5" FontWeight="SemiBold"
                                Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center" />
                     <!-- 版本号由代码填（UpdateChecker.CurrentVersion），避免 XAML 里写死一份 -->
                     <TextBlock x:Name="TxtProduct" Text="PerfOverlay" FontSize="11"

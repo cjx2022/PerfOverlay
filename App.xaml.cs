@@ -1185,6 +1185,21 @@ namespace PerfOverlay
             bool behaviorOk = bhColA && bhColB && bhRows && bhApart && bhFits;
             if (!behaviorOk) fails++;
 
+            // 标题栏 logo：要真的画出来了（取帧失败时 Image 仍在树里，只是宽高为 0），
+            // 且不能压到右边的「性能浮窗」标题；垂直方向与文字同中线。
+            var hdr = w.HeaderLogoRow();
+            var logoPt = hdr[0].TranslatePoint(new System.Windows.Point(0, 0), w);
+            var titlePt = hdr[1].TranslatePoint(new System.Windows.Point(0, 0), w);
+            double logoW = hdr[0].ActualWidth, logoH = hdr[0].ActualHeight;
+            double logoRight = logoPt.X + logoW;
+            double logoMid = logoPt.Y + logoH / 2;
+            double titleMid = titlePt.Y + hdr[1].ActualHeight / 2;
+            bool logoDrawn = logoW >= 12 && logoH >= 12;
+            bool logoClear = logoRight <= titlePt.X + 0.5 && logoPt.X >= 0;
+            bool logoMidOk = Math.Abs(logoMid - titleMid) <= 1.5;
+            bool logoOk = logoDrawn && logoClear && logoMidOk;
+            if (!logoOk) fails++;
+
             sb.AppendLine("== 设置面板 ==");
             sb.AppendLine(string.Format("   窗口      = {0:0.0} x {1:0.0} DIP", winW, winH));
             sb.AppendLine(string.Format("   内容需要  = {0:0.0} x {1:0.0} DIP", need.Width, need.Height));
@@ -1226,6 +1241,9 @@ namespace PerfOverlay
                 bhColA ? "OK" : "FAIL", bhColB ? "OK" : "FAIL", bhRows ? "OK" : "FAIL",
                 bhGap, bhFits ? "OK" : "FAIL", behaviorOk ? "OK" : "FAIL"));
             if (!bhFits && bhTight.Length > 0) sb.AppendLine("     放不下：" + bhTight.ToString().Trim());
+
+            sb.AppendLine(string.Format("   标题 logo = {0:0.0} x {1:0.0} DIP / 不压标题 {2} / 与文字同中线 {3} => {4}",
+                logoW, logoH, logoClear ? "OK" : "FAIL", logoMidOk ? "OK" : "FAIL", logoOk ? "OK" : "FAIL"));
 
             // ---- 感叹号点亮时的 CT 行 ----
             // 它平时是 Collapsed，光看默认布局等于没测。这里临时点亮再量三件事：
@@ -1959,23 +1977,6 @@ namespace PerfOverlay
                         p.X, fe.ActualWidth, right));
                 }
 
-                // 左侧 logo：必须真的画出来了，而且不能压到第一组指标上。
-                // 只断言「有 Image」不够 —— 宽度为 0 或取帧失败被跳过时它照样存在。
-                bool logoOk = true;
-                double logoW = 0, logoH = 0, logoRightEdge = 0, nextLeftEdge = 0;
-                if (ov.RowsHost.Children.Count > 0 && ov.RowsHost.Children[0] is System.Windows.Controls.Image)
-                {
-                    var logo = (FrameworkElement)ov.RowsHost.Children[0];
-                    logoW = logo.ActualWidth;
-                    logoH = logo.ActualHeight;
-                    logoRightEdge = logo.TranslatePoint(new System.Windows.Point(logo.ActualWidth, 0), ov).X;
-                    nextLeftEdge = ov.RowsHost.Children.Count > 1
-                        ? ((FrameworkElement)ov.RowsHost.Children[1]).TranslatePoint(new System.Windows.Point(0, 0), ov).X
-                        : logoRightEdge;
-                    logoOk = logoW >= 12 && logoH >= 12 && logoRightEdge <= nextLeftEdge + 0.5;
-                }
-                if (!logoOk) fails++;
-
                 // 允许 0.5 DIP 的亚像素误差；再大的差值就是真裁切
                 bool clipOk = rightmost <= winW + 0.5;
                 bool posOk = Math.Abs(ov.RightMargin - OverlayWindow.EdgeRight) <= 1.0
@@ -1985,8 +1986,6 @@ namespace PerfOverlay
                 sb.AppendLine("== Size=" + size + " ==");
                 sb.AppendLine(string.Format("   FontSize={0}  Actual={1:0.0} x {2:0.0}  groups={3}",
                     s.FontSizeMain, winW, ov.ActualHeight, ov.RowsHost.Children.Count));
-                sb.AppendLine(string.Format("   logo: {0:0.0} x {1:0.0}  右边界={2:0.0}  第一组起点={3:0.0}  => {4}",
-                    logoW, logoH, logoRightEdge, nextLeftEdge, logoOk ? "OK" : "MISSING/OVERLAP"));
                 sb.AppendLine(string.Format("   裁切: rightmost={0:0.0}  windowRight={1:0.0}  => {2}",
                     rightmost, winW, clipOk ? "OK" : "CLIPPED"));
                 sb.AppendLine(string.Format("   贴角: 右边距={0:0.0} (期望 {1:0.0})  上边距={2:0.0} (期望 {3:0.0})  => {4}",

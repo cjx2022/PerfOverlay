@@ -45,6 +45,10 @@ namespace PerfOverlay.Views
             // 标题栏上的产品名后面挂版本号：出问题时一眼知道在跑哪一版
             TxtProduct.Text = "PerfOverlay v" + UpdateChecker.CurrentVersion;
 
+            // logo 要按当前有效主题取深浅两套；构造期 DPI 还不可靠，Loaded 时再校准一次
+            ApplyLogo();
+            Loaded += (s, a) => ApplyLogo();
+
             // 采集状态是活的：自动恢复会在后台把「恢复中 → 采集中」走一遍，
             // 面板必须自己跟着变，否则用户盯着一个「采集中」看不出程序到底有没有在救。
             _statusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -100,6 +104,12 @@ namespace PerfOverlay.Views
         /// <summary>诊断用：右下底栏（版本与更新 / 恢复默认 / 完成）。</summary>
         public System.Windows.FrameworkElement FooterRowElement { get { return FooterRow; } }
 
+        /// <summary>诊断用：标题栏左侧 logo 与它右边的标题文字，用来验「画出来了且没压字」。</summary>
+        public System.Windows.FrameworkElement[] HeaderLogoRow()
+        {
+            return new System.Windows.FrameworkElement[] { ImgLogo, TxtTitle };
+        }
+
         /// <summary>诊断用：「以管理员身份启动」（未授权时才显示，测量时要临时点亮它）。</summary>
         public System.Windows.FrameworkElement ElevateButtonElement { get { return BtnElevate; } }
 
@@ -150,6 +160,9 @@ namespace PerfOverlay.Views
         {
             _s = settings.Clone();
             _loading = true;
+
+            // 「跟随系统」下是本方法被调来刷面板的，logo 也得跟着换深浅
+            ApplyLogo();
 
             ChkCpu.IsChecked = _s.ShowCpu;
             ChkMem.IsChecked = _s.ShowMemory;
@@ -464,7 +477,26 @@ namespace PerfOverlay.Views
         {
             if (_loading) return;
             ThemeManager.Apply(CollectTheme());
+            // 配色由 DynamicResource 自己换，logo 是位图，必须手动换一版
+            ApplyLogo();
             Emit();
+        }
+
+        /// <summary>
+        /// 标题栏 logo。资源是内嵌的 tray-light / tray-dark 两套 ico —— 和托盘、
+        /// exe 文件图标同一份，不另画 PNG，避免哪天又和文件图标长得不一样。
+        /// 取帧按**物理像素**挑（150% 缩放下用 24px 帧而非 16px 拉伸），
+        /// 否则白折线的边会糊成一条灰带。
+        /// </summary>
+        private void ApplyLogo()
+        {
+            const double side = 16;
+
+            double dpi = 1.0;
+            try { dpi = VisualTreeHelper.GetDpi(this).DpiScaleX; } catch (Exception) { }
+            if (dpi <= 0) dpi = 1.0;
+
+            ImgLogo.Source = IconAssets.Logo(ThemeManager.IsDark, (int)Math.Ceiling(side * dpi));
         }
 
         private string CollectTheme()
