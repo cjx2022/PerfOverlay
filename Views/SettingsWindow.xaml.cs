@@ -161,7 +161,7 @@ namespace PerfOverlay.Views
             _s = settings.Clone();
             _loading = true;
 
-            // 「跟随系统」下是本方法被调来刷面板的，logo 也得跟着换深浅
+            // logo 固定蓝底（不随主题换），这里重取一次只为跟着 DPI 走
             ApplyLogo();
 
             ChkCpu.IsChecked = _s.ShowCpu;
@@ -477,14 +477,17 @@ namespace PerfOverlay.Views
         {
             if (_loading) return;
             ThemeManager.Apply(CollectTheme());
-            // 配色由 DynamicResource 自己换，logo 是位图，必须手动换一版
+            // logo 固定用蓝底那版，不随主题换；这里重取只是为了 DPI 可能变了（换显示器后）
             ApplyLogo();
             Emit();
         }
 
         /// <summary>
-        /// 标题栏 logo。资源是内嵌的 tray-light / tray-dark 两套 ico —— 和托盘、
-        /// exe 文件图标同一份，不另画 PNG，避免哪天又和文件图标长得不一样。
+        /// 标题栏 logo。资源是内嵌的 ico —— 和托盘、exe 文件图标同一份，不另画 PNG，
+        /// 避免哪天又和文件图标长得不一样。
+        ///
+        /// **固定用蓝底那套，不跟主题换**：近黑底版压在深色标题栏上会整块融进背景，
+        /// 只剩一根白线，看着像图标没加载；蓝底在浅色和深色标题栏上都立得住。
         /// 取帧按**物理像素**挑（150% 缩放下用 24px 帧而非 16px 拉伸），
         /// 否则白折线的边会糊成一条灰带。
         /// </summary>
@@ -496,8 +499,11 @@ namespace PerfOverlay.Views
             try { dpi = VisualTreeHelper.GetDpi(this).DpiScaleX; } catch (Exception) { }
             if (dpi <= 0) dpi = 1.0;
 
-            ImgLogo.Source = IconAssets.Logo(ThemeManager.IsDark, (int)Math.Ceiling(side * dpi));
+            ImgLogo.Source = IconAssets.Logo(false, (int)Math.Ceiling(side * dpi));
         }
+
+        /// <summary>诊断用：当前标题栏 logo 的位图（验「深色主题下仍是蓝底」用）。</summary>
+        public ImageSource LogoSource { get { return ImgLogo.Source; } }
 
         private string CollectTheme()
         {

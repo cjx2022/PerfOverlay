@@ -1200,6 +1200,35 @@ namespace PerfOverlay
             bool logoOk = logoDrawn && logoClear && logoMidOk;
             if (!logoOk) fails++;
 
+            // 标题栏 logo 固定用**蓝底**那版，不随主题切近黑底 —— 近黑底压在深色标题栏上
+            // 会整块融进背景，只剩一根白线。判据落像素：统计不透明像素里「蓝通道明显高于红通道」
+            // 的占比，够不上就是拿错了那套图标（换主题时最容易出的错）。
+            bool logoBlue = false;
+            int bluePct = 0;
+            {
+                var src = w.LogoSource as System.Windows.Media.Imaging.BitmapSource;
+                if (src != null)
+                {
+                    var conv = src.Format == System.Windows.Media.PixelFormats.Bgra32
+                        ? src
+                        : new System.Windows.Media.Imaging.FormatConvertedBitmap(
+                            src, System.Windows.Media.PixelFormats.Bgra32, null, 0);
+                    int pw = conv.PixelWidth, ph = conv.PixelHeight;
+                    var buf = new byte[pw * ph * 4];
+                    conv.CopyPixels(buf, pw * 4, 0);
+                    int solid = 0, blue = 0;
+                    for (int i = 0; i < buf.Length; i += 4)
+                    {
+                        if (buf[i + 3] < 200) continue;      // 圆角外是透明，不参与统计
+                        solid++;
+                        if (buf[i] > buf[i + 2] + 40) blue++; // Bgra：分量顺序是 B/G/R/A
+                    }
+                    if (solid > 0) bluePct = blue * 100 / solid;
+                    logoBlue = solid > 0 && bluePct >= 25;
+                }
+            }
+            if (!logoBlue) fails++;
+
             sb.AppendLine("== 设置面板 ==");
             sb.AppendLine(string.Format("   窗口      = {0:0.0} x {1:0.0} DIP", winW, winH));
             sb.AppendLine(string.Format("   内容需要  = {0:0.0} x {1:0.0} DIP", need.Width, need.Height));
@@ -1244,6 +1273,8 @@ namespace PerfOverlay
 
             sb.AppendLine(string.Format("   标题 logo = {0:0.0} x {1:0.0} DIP / 不压标题 {2} / 与文字同中线 {3} => {4}",
                 logoW, logoH, logoClear ? "OK" : "FAIL", logoMidOk ? "OK" : "FAIL", logoOk ? "OK" : "FAIL"));
+            sb.AppendLine(string.Format("   蓝底占比  = {0}%（阈值 25%，不随主题切近黑底）=> {1}",
+                bluePct, logoBlue ? "OK" : "FAIL"));
 
             // ---- 感叹号点亮时的 CT 行 ----
             // 它平时是 Collapsed，光看默认布局等于没测。这里临时点亮再量三件事：
