@@ -280,8 +280,7 @@ namespace PerfOverlay.Views
         {
             try
             {
-                var tf = new Typeface(new FontFamily("Segoe UI, Microsoft YaHei UI"),
-                                      FontStyles.Normal, weight, FontStretches.Normal);
+                var tf = PerfOverlay.Services.UiFonts.Typeface(weight);
                 var ft = new FormattedText(text, System.Globalization.CultureInfo.CurrentUICulture,
                                            FlowDirection.LeftToRight, tf, fontSize, Brushes.Black, 1.0);
                 return ft.WidthIncludingTrailingWhitespace;

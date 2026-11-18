@@ -898,13 +898,26 @@ namespace PerfOverlay
                 {
                     _trayMenu.CreateControl();
                     _trayMenu.PerformLayout();
+
+                    // --menu-hl <index>：把第 index 项置为选中再画，用来验证「高亮底铺满整行」。
+                    // 不选中的话 DrawToBitmap 出来的是一张没有 hover 的白菜单，
+                    // 高亮块的左右边界根本无从核对（这正是之前那块"偏左的方块"漏掉的原因）。
+                    int hl = -1;
+                    if (int.TryParse(ArgValue(System.Environment.GetCommandLineArgs(), "--menu-hl") ?? "", out hl)
+                        && hl >= 0 && hl < _trayMenu.Items.Count)
+                    {
+                        _trayMenu.Items[hl].Select();
+                        _trayMenu.PerformLayout();
+                    }
+
                     using (var bmp = new Bitmap(Math.Max(1, _trayMenu.Width), Math.Max(1, _trayMenu.Height)))
                     {
                         _trayMenu.DrawToBitmap(bmp, new Rectangle(0, 0, bmp.Width, bmp.Height));
                         bmp.Save(shot, System.Drawing.Imaging.ImageFormat.Png);
                         var c = bmp.GetPixel(Math.Min(6, bmp.Width - 1), Math.Min(6, bmp.Height - 1));
-                        LogInfo("TrayProbe", string.Format("菜单 {0}x{1} 左上像素 #{2:X2}{3:X2}{4:X2} → {5}",
-                            bmp.Width, bmp.Height, c.R, c.G, c.B, shot));
+                        LogInfo("TrayProbe", string.Format("菜单 {0}x{1} / 可视宽 {2} / 高亮项 {3} → {4}",
+                            bmp.Width, bmp.Height, _trayMenu.ClientSize.Width,
+                            hl >= 0 ? _trayMenu.Items[hl].Text : "无", shot));
                     }
                 }
                 catch (Exception ex) { LogError("TrayProbe", ex); }
@@ -1189,6 +1202,35 @@ namespace PerfOverlay
             bool behaviorOk = bhColA && bhColB && bhRows && bhApart && bhFits;
             if (!behaviorOk) fails++;
 
+            // 卡片标题必须落在「卡内左上」：四张卡等高、内容高矮不同，只要外面套了
+            // VerticalAlignment=Center，标题就会被推到竖直中间 —— 截图上看只是"稍微靠下"，
+            // 实际差三十多个 DIP，和右边那张卡的标题完全不在一条线上。
+            // 判据用「相对卡内边距」而不是绝对坐标：两张卡的 Padding 本来就不同（14,12 / 15,13）。
+            var titles = w.Titles();
+            string[] cardNames = { "显示项目", "外观", "行为", "帧数采集" };
+            int titleBad = 0;
+            double titleMaxDx = 0, titleMaxDy = 0;
+            var titleDetail = new StringBuilder();
+            for (int i = 0; i < titles.Length && i < cards.Length; i++)
+            {
+                var bd = cards[i] as System.Windows.Controls.Border;
+                double padL = bd == null ? 0 : bd.Padding.Left;
+                double padT = bd == null ? 0 : bd.Padding.Top;
+                var tp = titles[i].TranslatePoint(new System.Windows.Point(0, 0), w);
+                // SectionTitle 自带 Margin.Left = 2，所以左边留到 3 DIP 的容差
+                double dx = tp.X - (rects[i].Left + padL);
+                double dy = tp.Y - (rects[i].Top + padT);
+                if (dx > titleMaxDx) titleMaxDx = dx;
+                if (dy > titleMaxDy) titleMaxDy = dy;
+                if (dx > 3.0 || dy > 1.5)
+                {
+                    titleBad++;
+                    titleDetail.AppendFormat(" {0}(dx={1:0.0},dy={2:0.0})", cardNames[i], dx, dy);
+                }
+            }
+            bool titlesOk = titleBad == 0;
+            if (!titlesOk) fails++;
+
             // 标题栏 logo：要真的画出来了（取帧失败时 Image 仍在树里，只是宽高为 0），
             // 且不能压到右边的「性能浮窗」标题；垂直方向与文字同中线。
             var hdr = w.HeaderLogoRow();
@@ -1275,6 +1317,9 @@ namespace PerfOverlay
                 bhGap, bhFits ? "OK" : "FAIL", behaviorOk ? "OK" : "FAIL"));
             if (!bhFits && bhTight.Length > 0) sb.AppendLine("     放不下：" + bhTight.ToString().Trim());
 
+            sb.AppendLine(string.Format("   卡片标题  = 贴卡内左上 {0}/{1}（最大 dx {2:0.0} / dy {3:0.0}）=> {4}{5}",
+                titles.Length - titleBad, titles.Length, titleMaxDx, titleMaxDy,
+                titlesOk ? "OK" : "FAIL", titleDetail.Length > 0 ? "　偏离:" + titleDetail.ToString().Trim() : ""));
             sb.AppendLine(string.Format("   标题 logo = {0:0.0} x {1:0.0} DIP / 不压标题 {2} / 与文字同中线 {3} => {4}",
                 logoW, logoH, logoClear ? "OK" : "FAIL", logoMidOk ? "OK" : "FAIL", logoOk ? "OK" : "FAIL"));
             sb.AppendLine(string.Format("   蓝底占比  = {0}%（阈值 25%，不随主题切近黑底）=> {1}",
@@ -1780,8 +1825,9 @@ namespace PerfOverlay
         {
             try
             {
-                var tf = new System.Windows.Media.Typeface(new System.Windows.Media.FontFamily("Segoe UI, Microsoft YaHei UI"),
-                                      FontStyles.Normal, weight, FontStretches.Normal);
+                // 必须与界面同一个字体（Services.UiFonts）：这个宽度拿来判断
+                // "按钮里那行字放不放得下"，字体不一致就等于拿别人的尺子量自己的衣服。
+                var tf = Services.UiFonts.Typeface(weight);
                 var ft = new System.Windows.Media.FormattedText(text ?? "", System.Globalization.CultureInfo.CurrentUICulture,
                                            FlowDirection.LeftToRight, tf, fontSize,
                                            System.Windows.Media.Brushes.Black, 1.0);
@@ -2086,6 +2132,11 @@ namespace PerfOverlay
                 || HasArg(args, "--hotkey-test")
                 || HasArg(args, "--shot")
                 || HasArg(args, "--readme-shot")
+                // 托盘菜单探针：只建一个菜单对象画位图，不建主窗口、不常驻，
+                // 浮窗正开着的时候也要能跑（否则「菜单长得对不对」永远只能在
+                // 关掉浮窗之后才验得了，平时最需要看的时候恰好验不了）。
+                || HasArg(args, "--tray-menu")
+                || HasArg(args, "--menu-shot")
                 || HasArg(args, "--clean-etw");
         }
 
@@ -2837,8 +2888,14 @@ namespace PerfOverlay
             if (!e.Item.Selected || !e.Item.Enabled) return;
             var g = e.Graphics;
             g.SmoothingMode = Drawing2D.SmoothingMode.AntiAlias;
-            var r = new Rectangle(2, 1, e.Item.Width - 4, e.Item.Height - 2);
-            using (var path = MenuSkin.RoundedPath(r, Math.Max(3, r.Height / 3)))
+            // 高亮底必须**铺满整行**：横向基准取菜单可视宽度，不是 Item.Width。
+            // 早先写 (2, 1, Item.Width - 4, ...)：左右各缩 2px，而 Item.Width 本身又和
+            // 可视宽度差几像素，结果就是一块贴在左边、右边明显没到底的方块 ——
+            // 文字是按 ClientSize.Width 居中的，两个基准不一致，看着就是"偏左"。
+            // 现在与文字同一基准、横向 0..ClientSize.Width；圆角交给窗口 Region 去裁，
+            // 贴边的直角在四角处会被自然裁成圆角，不会露出方形缺口。
+            var r = new Rectangle(0, 1, e.ToolStrip.ClientSize.Width, e.Item.Height - 2);
+            using (var path = MenuSkin.RoundedPath(r, Math.Max(4, r.Height / 5)))
             {
                 using (var b = new SolidBrush(_p.Hover)) g.FillPath(b, path);
             }

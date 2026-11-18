@@ -167,10 +167,20 @@
                      卡片内边距从 15,13 收到 14,12：多出来的一行不至于把窗口撑高，
                      文字也一个字都不用缩。 -->
                 <Border x:Name="CardDisplay" Grid.Row="0" Grid.Column="0" Style="{StaticResource Card}" Padding="14,12">
-                    <StackPanel VerticalAlignment="Center">
-                        <TextBlock Text="显示项目" Style="{StaticResource SectionTitle}" Margin="0,0,0,8" />
+                    <!-- 标题贴卡内左上，开关组仍旧是原来那个垂直中心。
+                         做法是把标题占的 26 DIP（18 字高 + 8 下边距）从「整块居中」里拿出来贴顶，
+                         剩下的区域自己再居中：新中心 = (26 + H) / 2，正好等于原来整块居中的
+                         中心 H/2 + 13 —— 换句话说，标题上去了，开关一个像素都没动。 -->
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
 
-                        <Grid>
+                        <TextBlock x:Name="TxtTitleDisplay" Grid.Row="0" Text="显示项目"
+                                   Style="{StaticResource SectionTitle}" Margin="0,0,0,8" />
+
+                        <Grid Grid.Row="1" VerticalAlignment="Center">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="14" />
@@ -263,13 +273,13 @@
                                       ToolTip="走 WDDM 适配器性能数据，免驱动、免管理员，NVIDIA / AMD 通用"
                                       Checked="OnAnyOptionChanged" Unchecked="OnAnyOptionChanged" />
                         </Grid>
-                    </StackPanel>
+                    </Grid>
                 </Border>
 
                 <!-- ===== 右上：外观 ===== -->
                 <Border x:Name="CardAppearance" Grid.Row="0" Grid.Column="2" Style="{StaticResource Card}" Padding="15,13">
                     <StackPanel VerticalAlignment="Center">
-                        <TextBlock Text="外观" Style="{StaticResource SectionTitle}" Margin="0,0,0,8" />
+                        <TextBlock x:Name="TxtTitleAppearance" Text="外观" Style="{StaticResource SectionTitle}" Margin="0,0,0,8" />
 
                         <!-- 主题：深色 / 浅色 / 跟随系统。切换即时生效，不需要重启，
                              面板本身、右键菜单与托盘菜单会一起变色（主题字典整份替换）。 -->
@@ -413,7 +423,7 @@
                 <!-- ===== 左下：行为 ===== -->
                 <Border x:Name="CardBehavior" Grid.Row="2" Grid.Column="0" Style="{StaticResource Card}" Padding="15,13">
                     <StackPanel VerticalAlignment="Center">
-                        <TextBlock Text="行为" Style="{StaticResource SectionTitle}" Margin="0,0,0,8" />
+                        <TextBlock x:Name="TxtTitleBehavior" Text="行为" Style="{StaticResource SectionTitle}" Margin="0,0,0,8" />
 
                         <!-- 四项两列（两行）：括号里的限定说明移到 tooltip，正文只留动作名。
                              竖排四行是这张卡偏高的唯一原因，压成两行后整张卡矮一截，
@@ -525,7 +535,7 @@
                             </Grid.RowDefinitions>
 
                             <StackPanel Grid.Row="0">
-                                <TextBlock Text="帧数采集" Style="{StaticResource SectionTitle}" Margin="0,0,0,8" />
+                                <TextBlock x:Name="TxtTitleFrame" Text="帧数采集" Style="{StaticResource SectionTitle}" Margin="0,0,0,8" />
 
                                 <TextBlock Text="帧数、1% Low 与 CPU 温度需要管理员权限。"
                                            FontSize="12" LineHeight="19" TextWrapping="Wrap"

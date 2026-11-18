@@ -97,8 +97,10 @@ namespace PerfOverlay.Controls
             set { SetValue(TextAlignmentProperty, value); }
         }
 
-        private static readonly FontFamily Face =
-            new FontFamily("Segoe UI, Microsoft YaHei UI");
+        // 字体统一从 Services.UiFonts 取，别在这里另写一份字面量：
+        // 浮窗的宽高是「先按这个字体量字宽、再定 SizeToContent」算出来的，
+        // 一旦这里与界面的 UiFont 不是同一个，浮窗就会按错误的宽度自适应（表现为文字贴边或被裁）。
+        private static readonly FontFamily Face = PerfOverlay.Services.UiFonts.Family;
 
         // FormattedText 的构造要查字体、排版、算字宽，比看上去贵。
         // 每次 UpdateMetrics 都会走「Measure → Render」两遍，文本相同就没必要建两遍，

@@ -76,6 +76,17 @@ namespace PerfOverlay.Views
             return new System.Windows.FrameworkElement[] { CardDisplay, CardAppearance, CardBehavior, CardFrame };
         }
 
+        /// <summary>
+        /// 诊断用：四张卡的标题，顺序与 <see cref="Cards"/> 一一对应。
+        /// 标题「在不在卡内左上」不能靠看截图 —— 四张卡等高而内容高矮不同，
+        /// 只要外面套了 VerticalAlignment=Center，标题就会被推到中间，
+        /// 肉眼看像是"稍微靠下"，量出来能差三十多个 DIP。
+        /// </summary>
+        public System.Windows.FrameworkElement[] Titles()
+        {
+            return new System.Windows.FrameworkElement[] { TxtTitleDisplay, TxtTitleAppearance, TxtTitleBehavior, TxtTitleFrame };
+        }
+
         /// <summary>诊断用：CT 行（开关 + 感叹号）。感叹号平时是 Collapsed，断言要临时点亮它。</summary>
         public System.Windows.FrameworkElement[] TempRow()
         {

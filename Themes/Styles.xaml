@@ -358,8 +358,11 @@
                 <ControlTemplate TargetType="ContextMenu">
                     <!-- 外层留白给投影，否则阴影会被裁掉 -->
                     <Grid Margin="9">
+                        <!-- 水平不留内边距（0,6）：菜单项的高亮底要**铺满整行**，
+                             和 Windows 自己的菜单一致。早先四周都留 6，高亮块成了浮在
+                             中间的一小块，右边总差半格，看着像没对齐。 -->
                         <Border Background="{DynamicResource MenuBg}" CornerRadius="10"
-                                BorderBrush="{DynamicResource MenuBorder}" BorderThickness="1" Padding="6">
+                                BorderBrush="{DynamicResource MenuBorder}" BorderThickness="1" Padding="0,6">
                             <Border.Effect>
                                 <DropShadowEffect BlurRadius="18" ShadowDepth="3" Direction="270"
                                                   Opacity="0.18" Color="#FF26456B" />
