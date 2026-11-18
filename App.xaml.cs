@@ -969,17 +969,24 @@ namespace PerfOverlay
             }
 
             bool row1Same = Math.Abs(rects[0].Height - rects[1].Height) <= 0.5;
-            // 第 2 行故意不等高：右下「帧数采集」按内容自适应高度，下边缘上移，
-            // 「恢复默认 / 完成」被放到卡片外面。所以这里只要求"不比左卡高" + 顶对齐。
+            // 第 2 行不等高：右下「帧数采集」填满该列剩余高度后仍比左卡矮（底栏按钮占一行），
+            // 所以这里要求"不比左卡高" + 顶对齐；下面再单独断言卡底与底栏之间只剩行间距。
             bool row2Lower = rects[3].Height <= rects[2].Height + 0.5;
             bool row1Top = Math.Abs(rects[0].Top - rects[1].Top) <= 0.5;
             bool row2Top = Math.Abs(rects[2].Top - rects[3].Top) <= 0.5;
+
+            // 右下卡必须填满该列：卡底到「恢复默认 / 完成」那行之间只该有 12 DIP 行间距。
+            // 早先是「卡片贴顶 + 按钮沉底」同格叠放，中间空出一整块 —— 光看截图容易觉得
+            // "还行"，量一下才知道空了 160 DIP。
+            var foot = w.FooterRowElement;
+            double footTop = foot.TranslatePoint(new System.Windows.Point(0, 0), w).Y;
+            bool row2Filled = Math.Abs(footTop - rects[3].Bottom - 12) <= 1.5;
             // 容差取 1 DIP：1.25 DPI 下 UseLayoutRounding 的量化步长是 0.8 DIP（一个设备像素），
             // 两列各占 352.8 / 352.0 属正常，肉眼看不出，也不该为了凑整关掉像素对齐。
             bool colsSame = Math.Abs(rects[0].Width - rects[1].Width) <= 1.0;
             bool leftEdge = Math.Abs(rects[0].Left - rects[2].Left) <= 0.5;
             bool rightEdge = Math.Abs((winW - rects[1].Right) - rects[0].Left) <= 0.5;
-            bool align = row1Same && row2Lower && row1Top && row2Top && colsSame && leftEdge && rightEdge;
+            bool align = row1Same && row2Lower && row2Filled && row1Top && row2Top && colsSame && leftEdge && rightEdge;
             if (!align) fails++;
 
             // 位置三档：同一行、等宽、文字放得下
@@ -1140,6 +1147,44 @@ namespace PerfOverlay
             bool metricsOk = colA && colB && rowsTied && colsApart && rowsEven && textFits;
             if (!metricsOk) fails++;
 
+            // 「行为」四项从竖排四行改成两列两行：列内左对齐、同一行顶对齐、列间有缝、
+            // 文字放得下。四个开关里「开机自动启动」「显示托盘图标」都是六个字，
+            // 半栏放不放得下只有量字宽才知道，被压窄只会静默裁字。
+            var beh = w.BehaviorSwitches();
+            var bhRect = new System.Windows.Rect[beh.Length];
+            for (int i = 0; i < beh.Length; i++)
+            {
+                var p = beh[i].TranslatePoint(new System.Windows.Point(0, 0), w);
+                bhRect[i] = new System.Windows.Rect(p.X, p.Y, beh[i].ActualWidth, beh[i].ActualHeight);
+            }
+            bool bhColA = true, bhColB = true, bhRows = true, bhFits = true;
+            var bhTight = new StringBuilder();
+            for (int i = 0; i < bhRect.Length; i++)
+            {
+                // 0/2 是左列、1/3 是右列；0/1 是第 1 行、2/3 是第 2 行
+                int colRef = (i % 2 == 0) ? 0 : 1;
+                int rowRef = (i < 2) ? 0 : 2;
+                if (Math.Abs(bhRect[i].Left - bhRect[colRef].Left) > 0.5)
+                {
+                    if (i % 2 == 0) bhColA = false; else bhColB = false;
+                }
+                if (Math.Abs(bhRect[i].Top - bhRect[rowRef].Top) > 0.5) bhRows = false;
+                var cb = beh[i] as System.Windows.Controls.CheckBox;
+                string label = (cb == null || cb.Content == null) ? "" : cb.Content.ToString();
+                double avail = bhRect[i].Width - 40 - 12;
+                double needW = TextWidthDip(label, 13, FontWeights.Normal);
+                if (needW > avail + 0.5)
+                {
+                    bhFits = false;
+                    bhTight.Append(string.Format("{0}({1:0.0}>{2:0.0}) ", label, needW, avail));
+                }
+                if (bhRect[i].Left < rects[2].Left - 0.5 || bhRect[i].Right > rects[2].Right + 0.5) bhFits = false;
+            }
+            double bhGap = bhRect[1].Left - bhRect[0].Right;
+            bool bhApart = bhGap >= 8.0;
+            bool behaviorOk = bhColA && bhColB && bhRows && bhApart && bhFits;
+            if (!behaviorOk) fails++;
+
             sb.AppendLine("== 设置面板 ==");
             sb.AppendLine(string.Format("   窗口      = {0:0.0} x {1:0.0} DIP", winW, winH));
             sb.AppendLine(string.Format("   内容需要  = {0:0.0} x {1:0.0} DIP", need.Width, need.Height));
@@ -1156,6 +1201,8 @@ namespace PerfOverlay
                     names[i], rects[i].X, rects[i].Y, rects[i].Width, rects[i].Height));
             }
             sb.AppendLine(string.Format("   同行等高  = {0} / 右下更矮 {1}", row1Same ? "OK" : "FAIL", row2Lower ? "OK" : "FAIL"));
+            sb.AppendLine(string.Format("   右下填充  = 卡底 {0:0.0} → 底栏 {1:0.0}（间距 {2:0.0}）=> {3}",
+                rects[3].Bottom, footTop, footTop - rects[3].Bottom, row2Filled ? "OK" : "FAIL"));
             sb.AppendLine(string.Format("   同行顶对齐= {0} / {1}", row1Top ? "OK" : "FAIL", row2Top ? "OK" : "FAIL"));
             sb.AppendLine(string.Format("   左右等宽  = {0}", colsSame ? "OK" : "FAIL"));
             sb.AppendLine(string.Format("   左右外边距相等 = {0}", rightEdge ? "OK" : "FAIL"));
@@ -1175,6 +1222,10 @@ namespace PerfOverlay
                 rowsEven ? "OK" : "FAIL", gapDetail,
                 colGapDip, textFits ? "OK" : "FAIL", metricsOk ? "OK" : "FAIL"));
             if (!textFits && tight.Length > 0) sb.AppendLine("     放不下：" + tight.ToString().Trim());
+            sb.AppendLine(string.Format("   行为两列  = 左列对齐 {0} / 右列对齐 {1} / 同行顶对齐 {2} / 列间 {3:0.0} DIP / 文字够 {4} => {5}",
+                bhColA ? "OK" : "FAIL", bhColB ? "OK" : "FAIL", bhRows ? "OK" : "FAIL",
+                bhGap, bhFits ? "OK" : "FAIL", behaviorOk ? "OK" : "FAIL"));
+            if (!bhFits && bhTight.Length > 0) sb.AppendLine("     放不下：" + bhTight.ToString().Trim());
 
             // ---- 感叹号点亮时的 CT 行 ----
             // 它平时是 Collapsed，光看默认布局等于没测。这里临时点亮再量三件事：
@@ -1214,6 +1265,42 @@ namespace PerfOverlay
             }
             if (!warnOk) fails++;
             sb.AppendLine(warnLine);
+
+            // ---- 未授权态：帧数采集卡里会多出一个「以管理员身份启动」 ----
+            // 这张卡现在填满整列，按钮出现后内容变高；一旦没人量，它会悄悄把卡撑破
+            // 或者压到底栏上。这里临时点亮再复原，量三件事：按钮在卡内、卡底到顶栏
+            // 仍只剩 12 DIP、窗口跟着长高而不是把内容裁掉。
+            string elevLine;
+            bool elevOk = true;
+            {
+                var btn = w.ElevateButtonElement;
+                var beforeVis = btn.Visibility;
+                btn.Visibility = System.Windows.Visibility.Visible;
+                w.UpdateLayout();
+
+                var elevCard = w.Cards()[3];
+                var cardT = elevCard.TransformToAncestor(w).Transform(new System.Windows.Point(0, 0));
+                var btnT = btn.TransformToAncestor(w).Transform(new System.Windows.Point(0, 0));
+                var footEl = w.FooterRowElement;
+                var footT = footEl.TransformToAncestor(w).Transform(new System.Windows.Point(0, 0));
+
+                double cardBottom = cardT.Y + elevCard.ActualHeight;
+                double btnBottom = btnT.Y + btn.ActualHeight;
+                bool elevInCard = btnBottom <= cardBottom - 12.0;    // 卡内边距 13，留 1 DIP 余量
+                bool elevFootFollows = Math.Abs(footT.Y - cardBottom - 12) <= 1.5;
+                bool elevNoClip = Math.Abs(w.ActualHeight - w.MeasureContentHeight().Height) <= 1.0;
+                elevOk = elevInCard && elevFootFollows && elevNoClip;
+
+                elevLine = string.Format(
+                    "   未授权态  = 按钮在卡内 {0}（底 {1:0.0} ≤ {2:0.0}）/ 底栏跟随 {3} / 不裁切 {4} => {5}",
+                    elevInCard ? "OK" : "FAIL", btnBottom, cardBottom - 12,
+                    elevFootFollows ? "OK" : "FAIL", elevNoClip ? "OK" : "FAIL", elevOk ? "OK" : "FAIL");
+
+                btn.Visibility = beforeVis;
+                w.UpdateLayout();
+            }
+            if (!elevOk) fails++;
+            sb.AppendLine(elevLine);
             sb.AppendLine();
 
             w.CloseForShutdown();

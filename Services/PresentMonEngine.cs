@@ -274,6 +274,9 @@ namespace PerfOverlay.Services
         /// <summary>当前目标 PID（诊断用）。</summary>
         public int TargetPid { get { lock (_gate) { return _targetPid; } } }
 
+        /// <summary>正在采集的进程名（空串 = 还没有目标）。给面板显示「在测谁」用。</summary>
+        public string TargetName { get { lock (_gate) { return _targetName; } } }
+
         public PresentMonEngine(string exePath, bool excludeSelf = true)
         {
             _exePath = exePath;

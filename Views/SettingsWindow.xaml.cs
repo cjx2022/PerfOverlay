@@ -88,6 +88,27 @@ namespace PerfOverlay.Views
             { ChkCpu, ChkMem, ChkFps, ChkLow, ChkFrameTime, ChkVram, ChkClock, ChkGpu, ChkCpuTemp, ChkGpuTemp };
         }
 
+        /// <summary>
+        /// 诊断用：「行为」卡里的四个开关，顺序是「左列 2 个 + 右列 2 个」。
+        /// 它们从竖排四行改成两列两行，两列是否对齐、文字是否被压窄都必须能量。
+        /// </summary>
+        public System.Windows.FrameworkElement[] BehaviorSwitches()
+        {
+            return new System.Windows.FrameworkElement[] { ChkLock, ChkThrough, ChkStartup, ChkTray };
+        }
+
+        /// <summary>诊断用：右下底栏（版本与更新 / 恢复默认 / 完成）。</summary>
+        public System.Windows.FrameworkElement FooterRowElement { get { return FooterRow; } }
+
+        /// <summary>诊断用：「以管理员身份启动」（未授权时才显示，测量时要临时点亮它）。</summary>
+        public System.Windows.FrameworkElement ElevateButtonElement { get { return BtnElevate; } }
+
+        /// <summary>诊断用：帧数采集卡里那条实时状态文字与它的圆点。</summary>
+        public System.Windows.FrameworkElement[] FrameStatusRow()
+        {
+            return new System.Windows.FrameworkElement[] { DotStatus, TxtFrameStatus };
+        }
+
         /// <summary>诊断用：内容区根（不含标题栏），按钮越界检查以它为右边界。</summary>
         public System.Windows.FrameworkElement ContentArea { get { return ContentRoot; } }
 
@@ -189,6 +210,7 @@ namespace PerfOverlay.Views
 
             DotStatus.Fill = StatusOk;
             TxtFrameStatus.Text = "采集中（前台窗口）";
+            TxtTarget.Text = "前台窗口";
             BtnElevate.Visibility = Visibility.Collapsed;
             BtnRecover.Visibility = Visibility.Collapsed;
         }
@@ -209,6 +231,9 @@ namespace PerfOverlay.Views
             bool can = PrivilegeHelper.CanCaptureFrames;
             string health = host.FramesHealth ?? "";
             string note = host.FramesHealthNote ?? "";
+
+            string tgt = host.FramesTarget ?? "";
+            TxtTarget.Text = tgt.Length > 0 ? tgt : "未锁定（等前台窗口出帧）";
 
             if (!host.Frames.PresentMonFound)
             {
