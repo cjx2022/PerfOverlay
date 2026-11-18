@@ -80,11 +80,12 @@ namespace PerfOverlay.Services
             var s = new AppSettings
             {
                 ShowCpu = true, ShowMemory = true, ShowFps = true, ShowLowFps = true, ShowVram = true,
-                ShowClock = true, ShowGpu = true, ShowCpuTemp = true, ShowGpuTemp = true,
+                ShowClock = false, ShowGpu = true, ShowCpuTemp = true, ShowGpuTemp = true,
                 SizeMode = "M",
                 TextColor = "#FFFFFF",
                 ShowLabels = true,
                 ShowOutline = true,
+                ShowFrameTime = true,        // v1 的完整指标集：帧时也在图上
                 Opacity = 1.0,
                 OffsetX = 0,
                 OffsetY = 0,
@@ -105,10 +106,10 @@ namespace PerfOverlay.Services
                 MemoryPercent = 61, MemoryUsed = 10UL << 30, MemoryTotal = 16UL << 30,
                 FpsOk = true, Fps = 144, LowFps = 118, FrameCount = 1440, TargetProcess = "game",
                 VramOk = true, VramPercent = 42, VramUsed = 3UL << 30, VramBudget = 8UL << 30,
-                ClockText = "21:45",
                 GpuOk = true, GpuPercent = 87,
                 TempCpuOk = true, TempCpuC = 62,
-                TempGpuOk = true, TempGpuC = 71
+                TempGpuOk = true, TempGpuC = 71,
+                FrameTimeOk = true, FrameTimeMs = 6.9, FrameTimeP95Ms = 9.4, FrameTimeSamples = 144
             });
 
             w.UpdateLayout();           // 数值位数变了，宽度要重排
