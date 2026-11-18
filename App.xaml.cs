@@ -1959,6 +1959,23 @@ namespace PerfOverlay
                         p.X, fe.ActualWidth, right));
                 }
 
+                // 左侧 logo：必须真的画出来了，而且不能压到第一组指标上。
+                // 只断言「有 Image」不够 —— 宽度为 0 或取帧失败被跳过时它照样存在。
+                bool logoOk = true;
+                double logoW = 0, logoH = 0, logoRightEdge = 0, nextLeftEdge = 0;
+                if (ov.RowsHost.Children.Count > 0 && ov.RowsHost.Children[0] is System.Windows.Controls.Image)
+                {
+                    var logo = (FrameworkElement)ov.RowsHost.Children[0];
+                    logoW = logo.ActualWidth;
+                    logoH = logo.ActualHeight;
+                    logoRightEdge = logo.TranslatePoint(new System.Windows.Point(logo.ActualWidth, 0), ov).X;
+                    nextLeftEdge = ov.RowsHost.Children.Count > 1
+                        ? ((FrameworkElement)ov.RowsHost.Children[1]).TranslatePoint(new System.Windows.Point(0, 0), ov).X
+                        : logoRightEdge;
+                    logoOk = logoW >= 12 && logoH >= 12 && logoRightEdge <= nextLeftEdge + 0.5;
+                }
+                if (!logoOk) fails++;
+
                 // 允许 0.5 DIP 的亚像素误差；再大的差值就是真裁切
                 bool clipOk = rightmost <= winW + 0.5;
                 bool posOk = Math.Abs(ov.RightMargin - OverlayWindow.EdgeRight) <= 1.0
@@ -1968,6 +1985,8 @@ namespace PerfOverlay
                 sb.AppendLine("== Size=" + size + " ==");
                 sb.AppendLine(string.Format("   FontSize={0}  Actual={1:0.0} x {2:0.0}  groups={3}",
                     s.FontSizeMain, winW, ov.ActualHeight, ov.RowsHost.Children.Count));
+                sb.AppendLine(string.Format("   logo: {0:0.0} x {1:0.0}  右边界={2:0.0}  第一组起点={3:0.0}  => {4}",
+                    logoW, logoH, logoRightEdge, nextLeftEdge, logoOk ? "OK" : "MISSING/OVERLAP"));
                 sb.AppendLine(string.Format("   裁切: rightmost={0:0.0}  windowRight={1:0.0}  => {2}",
                     rightmost, winW, clipOk ? "OK" : "CLIPPED"));
                 sb.AppendLine(string.Format("   贴角: 右边距={0:0.0} (期望 {1:0.0})  上边距={2:0.0} (期望 {3:0.0})  => {4}",

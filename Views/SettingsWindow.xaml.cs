@@ -210,7 +210,7 @@ namespace PerfOverlay.Views
 
             DotStatus.Fill = StatusOk;
             TxtFrameStatus.Text = "采集中（前台窗口）";
-            TxtTarget.Text = "前台窗口";
+            TxtTarget.Text = "msedge.exe  (12044)";
             BtnElevate.Visibility = Visibility.Collapsed;
             BtnRecover.Visibility = Visibility.Collapsed;
         }
@@ -232,8 +232,14 @@ namespace PerfOverlay.Views
             string health = host.FramesHealth ?? "";
             string note = host.FramesHealthNote ?? "";
 
+            // 采集目标：实时显示采集器锁定的进程（名字 + PID），没有目标时直说原因。
+            // 每秒刷新，所以前台一换窗口这里就跟着变；PID 露出来是为了和任务管理器对得上。
             string tgt = host.FramesTarget ?? "";
-            TxtTarget.Text = tgt.Length > 0 ? tgt : "未锁定（等前台窗口出帧）";
+            int tgtPid = host.FramesTargetPid;
+            if (tgt.Length == 0)
+                TxtTarget.Text = "未锁定（等前台窗口出帧）";
+            else
+                TxtTarget.Text = tgtPid > 0 ? (tgt + "  (" + tgtPid + ")") : tgt;
 
             if (!host.Frames.PresentMonFound)
             {

@@ -215,6 +215,9 @@ namespace PerfOverlay.Services
         /// <summary>正在采集的进程名，面板上显示「采集目标」用。空串表示还没有目标。</summary>
         public string FramesTarget { get { return Frames.TargetName; } }
 
+        /// <summary>正在采集的进程 PID（0 = 还没锁定目标）。面板上与进程名一起显示。</summary>
+        public int FramesTargetPid { get { return Frames.TargetPid; } }
+
         /// <summary>
         /// CT 当前的取数状态，给设置面板判断要不要显示感叹号。
         /// 只读，不会触发安装 —— 驱动不在就是 not_installed，仅此而已。

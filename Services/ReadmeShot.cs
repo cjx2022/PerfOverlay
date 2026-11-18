@@ -39,21 +39,24 @@ namespace PerfOverlay.Services
 
             // 配图固定浅色打头：README 的图必须可复现，不能因为生成图的那台机器
             // 设了深色主题就换一套配色。深色面板另外单独出一张 console-dark.png。
+            //
+            // 浮窗要出两张：logo 跟随主题（浅色=蓝底白折线，深色=近黑底白折线），
+            // 所以压在深色底和浅色底上的那两张图必须各用各的版本。
             string prev = ThemeManager.Effective;
-            ThemeManager.Apply(ThemeManager.Light);
             try
             {
-                using (var overlay = RenderOverlay())
-                using (var panel = RenderPanel())
+                using (var ovDark = RenderOverlay(ThemeManager.Dark))
+                using (var ovLight = RenderOverlay(ThemeManager.Light))
+                using (var panel = RenderPanel(ThemeManager.Light))
                 {
-                    var hero = ComposeHero(panel, overlay);
+                    var hero = ComposeHero(panel, ovDark, ovLight);
                     string heroPath = Path.Combine(outDir, "screenshot.png");
                     hero.Save(heroPath, ImageFormat.Png);
                     hero.Dispose();
 
                     // 顺带输出几张单独的图，README 里可以按需引用
-                    Save(overlay, Path.Combine(outDir, "overlay-dark.png"), DarkBackdrop);
-                    Save(overlay, Path.Combine(outDir, "overlay-light.png"), LightBackdrop);
+                    Save(ovDark, Path.Combine(outDir, "overlay-dark.png"), DarkBackdrop);
+                    Save(ovLight, Path.Combine(outDir, "overlay-light.png"), LightBackdrop);
                     Save(panel, Path.Combine(outDir, "console.png"), CanvasBackdrop);
 
                     using (var darkPanel = RenderPanel(ThemeManager.Dark))
@@ -70,8 +73,25 @@ namespace PerfOverlay.Services
 
         // ------------------------------------------------------------------
 
-        /// <summary>浮窗：九项指标全开（配图要展示全部能力）、中等字号、默认白字带描边，填一组示例数值。</summary>
-        private static Bitmap RenderOverlay()
+        /// <summary>
+        /// 浮窗：九项指标全开（配图要展示全部能力）、中等字号、默认白字带描边，填一组示例数值。
+        /// theme 决定左侧 logo 用哪一套（浅色蓝底 / 深色近黑底），文字颜色始终是白字带描边。
+        /// </summary>
+        private static Bitmap RenderOverlay(string theme)
+        {
+            string prev = ThemeManager.Effective;
+            ThemeManager.Apply(theme);
+            try
+            {
+                return RenderOverlayCore();
+            }
+            finally
+            {
+                ThemeManager.Apply(prev);
+            }
+        }
+
+        private static Bitmap RenderOverlayCore()
         {
             // 同 RenderPanel：不读本机配置，保证图可复现、不带个人痕迹。
             var s = new AppSettings
@@ -198,7 +218,7 @@ namespace PerfOverlay.Services
 
         // ------------------------------------------------------------------
 
-        private static Bitmap ComposeHero(Bitmap panel, Bitmap overlay)
+        private static Bitmap ComposeHero(Bitmap panel, Bitmap overlayDark, Bitmap overlayLight)
         {
             const int pad = 30;
             const int gap = 24;
@@ -206,7 +226,7 @@ namespace PerfOverlay.Services
             int panelH = (int)Math.Round(panel.Height * (double)panelW / panel.Width);
             int rightW = 900;
 
-            int blockH = Math.Max((int)(rightW * 0.30), overlay.Height + 64);
+            int blockH = Math.Max((int)(rightW * 0.30), Math.Max(overlayDark.Height, overlayLight.Height) + 64);
             int bodyH = Math.Max(panelH, blockH * 2 + gap);
 
             int totalW = pad * 2 + panelW + gap + rightW;
@@ -230,11 +250,11 @@ namespace PerfOverlay.Services
 
                 // 右上：深色背景
                 var darkRect = new Rectangle(pad + panelW + gap, rightTop, rightW, blockH);
-                DrawStage(g, darkRect, DarkBackdrop, overlay, "深色背景");
+                DrawStage(g, darkRect, DarkBackdrop, overlayDark, "深色背景");
 
                 // 右下：浅色背景
                 var lightRect = new Rectangle(pad + panelW + gap, rightTop + blockH + gap, rightW, blockH);
-                DrawStage(g, lightRect, LightBackdrop, overlay, "浅色背景");
+                DrawStage(g, lightRect, LightBackdrop, overlayLight, "浅色背景");
             }
             return canvas;
         }
