@@ -2,6 +2,7 @@ using System;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Text;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -76,22 +77,7 @@ namespace PerfOverlay.Services
         /// </summary>
         private static Bitmap RenderOverlay()
         {
-            // 同 RenderPanel：不读本机配置，保证图可复现、不带个人痕迹。
-            var s = new AppSettings
-            {
-                ShowCpu = true, ShowMemory = true, ShowFps = true, ShowLowFps = true, ShowVram = true,
-                ShowClock = false, ShowGpu = true, ShowCpuTemp = true, ShowGpuTemp = true,
-                SizeMode = "M",
-                TextColor = "#FFFFFF",
-                ShowLabels = true,
-                ShowOutline = true,
-                ShowFrameTime = true,        // v1 的完整指标集：帧时也在图上
-                Opacity = 1.0,
-                OffsetX = 0,
-                OffsetY = 0,
-                Hotkey = "",
-                FirstRunDone = true
-            };
+            var s = OverlaySettings();
 
             var w = new OverlayWindow();
             w.ApplySettings(s, true);
@@ -118,6 +104,29 @@ namespace PerfOverlay.Services
             return bmp;
         }
 
+        /// <summary>
+        /// 配图用的浮窗设置：九项指标全开、中等字号、默认白字带描边。
+        /// 同 RenderPanel：不读本机配置，保证图可复现、不带个人痕迹。
+        /// </summary>
+        private static AppSettings OverlaySettings()
+        {
+            return new AppSettings
+            {
+                ShowCpu = true, ShowMemory = true, ShowFps = true, ShowLowFps = true, ShowVram = true,
+                ShowClock = false, ShowGpu = true, ShowCpuTemp = true, ShowGpuTemp = true,
+                SizeMode = "M",
+                TextColor = "#FFFFFF",
+                ShowLabels = true,
+                ShowOutline = true,
+                ShowFrameTime = true,        // v1 的完整指标集：帧时也在图上
+                Opacity = 1.0,
+                OffsetX = 0,
+                OffsetY = 0,
+                Hotkey = "",
+                FirstRunDone = true
+            };
+        }
+
         /// <summary>控制面板：与用户实际打开时完全一样的视觉树（显示项全开，配图才看得出两列布局）。</summary>
         private static Bitmap RenderPanel()
         {
@@ -140,10 +149,30 @@ namespace PerfOverlay.Services
 
         private static Bitmap RenderPanelCore(string theme)
         {
-            // 配图必须可复现、且不带任何本机痕迹：刻意从 new AppSettings() 起，
-            // 不读 SettingsStore —— 否则用户的热键（如 Ctrl+F）、开机自启勾选、
-            // 字号档位会跟着进图，既不可复现也等于把本机配置贴到公开仓库里。
-            var s = new AppSettings
+            // 顺序不能改：ApplyShotState 必须在 Show 之前，否则两处文案是窗口已经排完版
+            // 之后再改的，出图会跟历史配图差半个像素（看着一样，sha 不一样）。
+            var w = new SettingsWindow();
+            w.Bind(PanelSettings(theme));
+            w.ApplyShotState(false);   // 自启关、帧采集显示正常态：图可复现且不带本机状态
+            w.ShowActivated = false;
+            w.Opacity = 0;
+            w.MoveOffscreen();
+            w.Show();
+            w.UpdateLayout();
+
+            var bmp = Snap(w.Content as Visual);
+            w.CloseForShutdown();
+            return bmp;
+        }
+
+        /// <summary>
+        /// 配图用的面板设置。必须可复现、且不带任何本机痕迹：刻意从 new AppSettings() 起，
+        /// 不读 SettingsStore —— 否则用户的热键（如 Ctrl+F）、开机自启勾选、
+        /// 字号档位会跟着进图，既不可复现也等于把本机配置贴到公开仓库里。
+        /// </summary>
+        private static AppSettings PanelSettings(string theme)
+        {
+            return new AppSettings
             {
                 ShowCpu = true, ShowMemory = true, ShowFps = true, ShowLowFps = true, ShowVram = true,
                 ShowClock = true, ShowGpu = true, ShowCpuTemp = true, ShowGpuTemp = true,
@@ -163,19 +192,141 @@ namespace PerfOverlay.Services
                 Theme = theme,
                 FirstRunDone = true
             };
+        }
 
+        /// <summary>按配图状态开一张离屏面板（不抢焦点、不显示）；调用方负责 CloseForShutdown。</summary>
+        private static SettingsWindow OpenPanel(string theme)
+        {
             var w = new SettingsWindow();
-            w.Bind(s);
-            w.ApplyShotState(false);   // 自启关、帧采集显示正常态：图可复现且不带本机状态
+            w.Bind(PanelSettings(theme));
             w.ShowActivated = false;
             w.Opacity = 0;
             w.MoveOffscreen();
             w.Show();
             w.UpdateLayout();
+            return w;
+        }
 
-            var bmp = Snap(w.Content as Visual);
-            w.CloseForShutdown();
-            return bmp;
+        // ------------------------------------------------------------------
+        // 真实数据版：先真采几秒，再用实时快照出图
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// 用**真实采集数据**出图：真的起一次 PresentMon 采几秒，再把最好的一帧快照灌进浮窗与
+        /// 面板，渲染路径与 --shot 完全一致。
+        ///
+        /// 为什么另开一个入口：--shot 填的是示例数值（不需要权限、每次出图一模一样），
+        /// 但配图一旦要拿去讲「这软件真的在测」，数字就得是这台机器当下的读数 —— 否则一眼假。
+        /// 代价是必须管理员运行，且每次出图都不同，所以只在做宣发素材时才跑。
+        /// </summary>
+        public static int ComposeLive(string outDir, int seconds, out string report)
+        {
+            if (!Directory.Exists(outDir)) Directory.CreateDirectory(outDir);
+            if (!PrivilegeHelper.CanCaptureFrames)
+            {
+                report = "未取得管理员权限：PresentMon 起不来，出不了真实数据配图。";
+                return 3;
+            }
+
+            var sb = new StringBuilder();
+            string prev = ThemeManager.Effective;
+            var so = OverlaySettings();
+            OverlayWindow ov = null;
+            SettingsWindow panel = null;
+            MonitorHost host = null;
+            Bitmap vBmp = null, pLight = null, pDark = null;
+            try
+            {
+                ov = new OverlayWindow();
+                ov.ApplySettings(so, true);
+                ov.Opacity = 0;         // 与 --shot 同理：全程不出现在屏幕上
+                ov.Show();
+                ov.UpdateLayout();
+
+                panel = OpenPanel(ThemeManager.Light);
+
+                // 回调在采集线程上，这里只存对象，不碰 UI（WPF 有线程亲和）
+                MetricsSnapshot last = null, best = null;
+                int ticks = 0;
+                host = new MonitorHost(MonitorHost.PresentMonPath());
+                host.Updated += delegate(object a, MetricsSnapshot b)
+                {
+                    last = b;
+                    ticks++;
+                    if (b.FpsOk && (best == null || b.FrameTimeSamples > best.FrameTimeSamples)) best = b;
+                };
+                host.Start(so);
+
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                // 采到够用的样本就提前收工；满 N 秒还没拿到就按满 N 秒判失败，
+                // 别让「前台没程序出帧」这种情况白等成两倍时长。
+                while (sw.Elapsed.TotalSeconds < seconds)
+                {
+                    System.Threading.Thread.Sleep(200);
+                    if (best != null && best.FrameTimeSamples >= 45 && sw.Elapsed.TotalSeconds >= 6) break;
+                }
+                host.Stop();
+                System.Threading.Thread.Sleep(400);   // 等 PresentMon 收尾，别把半截数据当结论
+
+                sb.AppendLine("=== 真实数据配图 ===");
+                string hNote = host.FramesHealthNote ?? "";
+                sb.AppendLine(string.Format("采集 {0:0.0}s / 回调 {1} 次 / 健康度 {2}{3}",
+                    sw.Elapsed.TotalSeconds, ticks, host.FramesHealth ?? "?",
+                    hNote.Length > 0 ? "（" + hNote + "）" : ""));
+
+                var snap = best ?? last;
+                if (snap == null) { report = sb + "✗ 一帧快照都没有：PresentMon 没有输出。"; return 4; }
+
+                sb.AppendLine(string.Format(
+                    "快照 fps_ok={0} fps={1} low={2} 帧数={3} | ft_ok={4} ft={5:0.00} p95={6:0.00} 样本={7} | 目标={8}({9})",
+                    snap.FpsOk, snap.Fps, snap.LowFps, snap.FrameCount,
+                    snap.FrameTimeOk, snap.FrameTimeMs, snap.FrameTimeP95Ms, snap.FrameTimeSamples,
+                    snap.TargetProcess, host.FramesTargetPid));
+
+                if (!snap.FpsOk || snap.Fps <= 0)
+                {
+                    report = sb + "✗ 没有拿到正数帧数：前台没有程序在出帧（PresentMon 只测有画面提交的进程）。";
+                    return 5;
+                }
+
+                ov.UpdateMetrics(snap);
+                ov.UpdateLayout();      // 位数变了，宽度要重排
+                vBmp = Snap(ov.Content as Visual);
+
+                panel.UpdateFrameStatus(host);   // 采集目标 / 状态行用真实值
+                panel.UpdateLayout();
+                pLight = Snap(panel.Content as Visual);
+                panel.CloseForShutdown();
+                panel = null;
+
+                ThemeManager.Apply(ThemeManager.Dark);
+                panel = OpenPanel(ThemeManager.Dark);
+                panel.UpdateFrameStatus(host);
+                panel.UpdateLayout();
+                pDark = Snap(panel.Content as Visual);
+
+                Save(vBmp, Path.Combine(outDir, "overlay-light.png"), LightBackdrop);
+                Save(vBmp, Path.Combine(outDir, "overlay-dark.png"), DarkBackdrop);
+                Save(pLight, Path.Combine(outDir, "console.png"), CanvasBackdrop);
+                Save(pDark, Path.Combine(outDir, "console-dark.png"), DarkBackdrop);
+                using (var hero = ComposeHero(pLight, vBmp))
+                    hero.Save(Path.Combine(outDir, "screenshot.png"), ImageFormat.Png);
+
+                sb.AppendLine("输出目录: " + outDir);
+                sb.AppendLine("RESULT: OK");
+                report = sb.ToString();
+                return 0;
+            }
+            finally
+            {
+                if (panel != null) panel.CloseForShutdown();
+                if (ov != null) ov.Close();
+                if (host != null) host.Stop();
+                if (vBmp != null) vBmp.Dispose();
+                if (pLight != null) pLight.Dispose();
+                if (pDark != null) pDark.Dispose();
+                ThemeManager.Apply(prev);
+            }
         }
 
         private static Bitmap Snap(Visual v)

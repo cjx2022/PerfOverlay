@@ -231,6 +231,26 @@ namespace PerfOverlay
                 return;
             }
 
+            // ---- 真实数据配图：真采几秒，用实时快照离屏渲染（需管理员，做宣发素材用）----
+            if (HasArg(e.Args, "--live-shot"))
+            {
+                string dir = ArgValue(e.Args, "--live-shot") ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "docs");
+                int secs = 14;
+                int parsed;
+                if (int.TryParse(ArgValue(e.Args, "--live-seconds") ?? "", out parsed) && parsed >= 6) secs = parsed;
+                string report = "";
+                int code;
+                try { code = Services.ReadmeShot.ComposeLive(dir, secs, out report); }
+                catch (Exception ex) { LogError("LiveShot", ex); report = "异常: " + ex; code = 2; }
+                try
+                {
+                    File.WriteAllText(Path.Combine(Path.GetTempPath(), "perfoverlay-liveshot.txt"), report, Encoding.UTF8);
+                }
+                catch (Exception) { }
+                Shutdown(code);
+                return;
+            }
+
             // ---- CSV 回放：验证解析 / 多链去重 / 1% Low 聚合（不需要管理员权限）----
             if (HasArg(e.Args, "--replay"))
             {
@@ -2131,6 +2151,7 @@ namespace PerfOverlay
                 || HasArg(args, "--tray-icon-test")
                 || HasArg(args, "--hotkey-test")
                 || HasArg(args, "--shot")
+                || HasArg(args, "--live-shot")
                 || HasArg(args, "--readme-shot")
                 // 托盘菜单探针：只建一个菜单对象画位图，不建主窗口、不常驻，
                 // 浮窗正开着的时候也要能跑（否则「菜单长得对不对」永远只能在
