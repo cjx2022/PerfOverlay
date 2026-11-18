@@ -9,19 +9,27 @@
          用 StaticResource 的话，字典一换，已经解析过的值就冻在旧颜色上了。
          ================================================================== -->
 
-    <Color x:Key="PageBgColor">#FFF3F8FE</Color>
+    <!-- 页面底：明确的一层浅蓝。原来 #F3F8FE 太接近白，卡片压上去几乎没有层次，
+         整片看起来像"白底上画了两个边框"。加深到这里后，白卡片才是真的浮起来。 -->
+    <Color x:Key="PageBgColor">#FFE8F1FD</Color>
     <Color x:Key="CardBgColor">#FFFFFFFF</Color>
-    <Color x:Key="CardBorderColor">#FFE2ECFA</Color>
+    <Color x:Key="CardBorderColor">#FFDBE8F8</Color>
     <Color x:Key="TextPrimaryColor">#FF182A40</Color>
-    <Color x:Key="TextSecondaryColor">#FF5F7590</Color>
+    <!-- 次要文字：底色从近白加深成浅蓝后，原来的 #5F7590 压在上面只有 4.16:1，
+         刚好掉到 AA（4.5）以下。加深半档拉回 4.9:1，白卡片上也更清楚。 -->
+    <Color x:Key="TextSecondaryColor">#FF56698B</Color>
     <Color x:Key="TextHintColor">#FF66788E</Color>
     <Color x:Key="AccentColor">#FF2C6BF0</Color>
     <Color x:Key="AccentHoverColor">#FF1E56D5</Color>
-    <Color x:Key="AccentTextColor">#FF2560E0</Color>
-    <Color x:Key="AccentSoftColor">#FFE9F0FE</Color>
+    <!-- 强调文字：压在选中浅底（#D6E5FC）上的那一档要够黑，否则 12px 粗体只有 4.3:1 -->
+    <Color x:Key="AccentTextColor">#FF1B52CE</Color>
+    <!-- 选中态浅底：页面底已经是 #E8F1FD，这里必须比它更饱和一点，
+         否则「选中的那格」和背景同色，看着像没选中。 -->
+    <Color x:Key="AccentSoftColor">#FFD6E5FC</Color>
     <Color x:Key="TrackBgColor">#FFD9E6F8</Color>
-    <Color x:Key="WindowBorderColor">#FFD3E2F7</Color>
-    <Color x:Key="TitleBarBgColor">#FFFFFFFF</Color>
+    <Color x:Key="WindowBorderColor">#FFC9DCF5</Color>
+    <!-- 标题栏比页面更亮一档：整体仍是浅蓝调，但和内容区有条明确的界 -->
+    <Color x:Key="TitleBarBgColor">#FFF4F9FF</Color>
     <Color x:Key="InputBgColor">#FFFFFFFF</Color>
     <Color x:Key="CloseIconColor">#FF7E95B3</Color>
     <Color x:Key="CloseHoverColor">#FFFDECEC</Color>
