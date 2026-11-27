@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/logo.png" width="96" height="96" alt="PerfOverlay">
+  <img src="https://testingcf.jsdelivr.net/gh/cjx2022/PerfOverlay@main/docs/logo.png" width="96" height="96" alt="PerfOverlay">
 </p>
 
 <h1 align="center">PerfOverlay · 性能浮窗</h1>
@@ -14,7 +14,7 @@
 
 ---
 
-![PerfOverlay 控制面板与浮窗](docs/screenshot.png)
+![PerfOverlay 控制面板与浮窗](https://testingcf.jsdelivr.net/gh/cjx2022/PerfOverlay@main/docs/screenshot.png)
 
 > 左：控制面板。右上：深色背景上的浮窗。右下：浅色背景上的浮窗。
 
@@ -40,7 +40,7 @@
 - **行为**：锁定位置 · 鼠标穿透 · 开机自启 · 显示托盘图标 · 复位到右上角
 
 <p align="center">
-  <img src="docs/console-dark.png" width="620" alt="深色主题的控制面板">
+  <img src="https://testingcf.jsdelivr.net/gh/cjx2022/PerfOverlay@main/docs/console-dark.png" width="620" alt="深色主题的控制面板">
 </p>
 
 ## 指标解释
