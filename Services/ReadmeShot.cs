@@ -95,7 +95,10 @@ namespace PerfOverlay.Services
                 GpuOk = true, GpuPercent = 87,
                 TempCpuOk = true, TempCpuC = 62,
                 TempGpuOk = true, TempGpuC = 71,
-                FrameTimeOk = true, FrameTimeMs = 6.9, FrameTimeP95Ms = 9.4, FrameTimeSamples = 144
+                FrameTimeOk = true, FrameTimeMs = 6.9, FrameTimeP95Ms = 9.4, FrameTimeSamples = 144,
+                // 时间项：不填就会显示 N/A（真机路径由 MonitorHost 每拍写入，配图是离屏构造的）。
+                // 固定值而不是 DateTime.Now，配图要可复现、不带"生成时刻"这种一次性信息。
+                ClockText = "21:47"
             });
 
             w.UpdateLayout();           // 数值位数变了，宽度要重排
