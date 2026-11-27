@@ -30,4 +30,7 @@ video-v1/
 
 # 本地归档（旧版本产物、Downloads 搬迁的历史 exe，不入库）
 _archive/
+# 本地归档工作区（归档文档源、打包脚本、历史包），只在本机保留
+_backup/
 capture-real.bat
+capture-live2.bat

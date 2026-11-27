@@ -186,6 +186,13 @@ namespace PerfOverlay
                 return;
             }
 
+            // ---- 窗口层级自检：任务栏可见性 + 全屏时能不能抢回最上层 ----
+            if (HasArg(e.Args, "--window-audit"))
+            {
+                RunWindowAudit();
+                return;
+            }
+
             // ---- 热键自检：写法解析 + 真实注册 + 占用检测，不开窗口 ----
             if (HasArg(e.Args, "--hotkey-test"))
             {
@@ -2109,6 +2116,212 @@ namespace PerfOverlay
             Shutdown(fails == 0 ? 0 : 2);
         }
 
+        // ==================================================================
+        // 窗口层级 / 任务栏自检（1.0.1）
+        // ==================================================================
+
+        /// <summary>
+        /// 验证两件「看着像 UI bug、其实是窗口样式」的事，全部用 Win32 拿证据：
+        /// 1. 浮窗到底会不会出现在任务栏（取决于 WS_EX_TOOLWINDOW 有没有被去掉）；
+        /// 2. 前台出现全屏窗口时，能不能把浮窗重新钉回最上层。
+        /// 断言的是扩展样式位与矩形判定结果，不靠截图 —— 这两件事在截图里都看不出来。
+        /// </summary>
+        private void RunWindowAudit()
+        {
+            var sb = new StringBuilder();
+            int fails = 0;
+
+            Action<string, bool, string> check = (name, ok, detail) =>
+            {
+                if (!ok) fails++;
+                sb.AppendLine("[" + (ok ? "通过" : "失败") + "] " + name
+                    + (detail == null || detail.Length == 0 ? "" : "  " + detail));
+            };
+
+            const int GWL_EXSTYLE = -20;
+            const int WS_EX_TOOLWINDOW = 0x00000080;
+            const int WS_EX_TOPMOST = 0x00000008;
+
+            // 屏幕外 + 全透明：自检要创建真实句柄，但不能在用户眼前闪一下
+            var ov = new OverlayWindow();
+            ov.WindowStartupLocation = WindowStartupLocation.Manual;
+            ov.Opacity = 0;
+            ov.Top = -32000;
+            ov.Show();
+            ov.ApplySettings(new AppSettings(), true);
+            ov.UpdateLayout();
+
+            var ovHwnd = new System.Windows.Interop.WindowInteropHelper(ov).Handle;
+            check("浮窗已创建窗口句柄", ovHwnd != IntPtr.Zero, "hwnd=0x" + ovHwnd.ToInt64().ToString("X"));
+
+            int ex = OverlayNative.GetWindowLong(ovHwnd, GWL_EXSTYLE);
+            // 浮窗是工具窗口：不进任务栏、不进 Alt+Tab。
+            // 1.0.1 为了「任务栏可见」把这个位去掉了，结果任务栏多出一个 PerfOverlay 图标，
+            // 属于把用户的诉求理解错了（人家要的是浮窗能落在任务栏那块区域上，不是要一个程序按钮）。
+            check("扩展样式含 WS_EX_TOOLWINDOW（不进任务栏 / Alt+Tab）",
+                (ex & WS_EX_TOOLWINDOW) != 0, "exstyle=0x" + ex.ToString("X8"));
+            check("扩展样式含 WS_EX_TOPMOST",
+                (ex & WS_EX_TOPMOST) != 0, "exstyle=0x" + ex.ToString("X8"));
+            check("ShowInTaskbar = false", !ov.ShowInTaskbar, "ShowInTaskbar=" + ov.ShowInTaskbar);
+
+            // ---------- 全屏判定 ----------
+            check("浮窗自身不算全屏", !TopmostGuard.IsFullscreen(ovHwnd), "");
+
+            // 桌面窗口是天然的全屏矩形，靠类名排除。Progman 找不到就退到 WorkerW。
+            var desk = OverlayNative.FindWindow("Progman", null);
+            if (desk == IntPtr.Zero) desk = OverlayNative.FindWindow("WorkerW", null);
+            if (desk != IntPtr.Zero)
+                check("桌面窗口（Progman/WorkerW）不算全屏", !TopmostGuard.IsFullscreen(desk), "");
+
+            // 真造一个铺满主屏的无边框窗口：这才是「全屏应用」在系统眼里的样子
+            var bounds = Forms.Screen.PrimaryScreen.Bounds;
+            var fs = new Window
+            {
+                WindowStyle = WindowStyle.None,
+                ResizeMode = ResizeMode.NoResize,
+                ShowInTaskbar = false,
+                ShowActivated = false,
+                Opacity = 0,
+                Left = 0,
+                Top = 0,
+                Width = 200,
+                Height = 200,
+            };
+            fs.Show();
+            var fsHwnd = new System.Windows.Interop.WindowInteropHelper(fs).Handle;
+            // 直接按物理像素摆位：绕开 DIP 换算，避免 125% 缩放下差几像素被判成非全屏
+            OverlayNative.SetWindowPos(fsHwnd, IntPtr.Zero, 0, 0, bounds.Width, bounds.Height,
+                OverlayNative.SWP_NOZORDER | OverlayNative.SWP_NOACTIVATE);
+            check("全屏窗口识别为全屏", TopmostGuard.IsFullscreen(fsHwnd),
+                bounds.Width + "x" + bounds.Height);
+
+            // 最大化的普通窗口（工作区矩形）不能被误判成全屏
+            var work = Forms.Screen.PrimaryScreen.WorkingArea;
+            OverlayNative.SetWindowPos(fsHwnd, IntPtr.Zero, work.Left, work.Top, work.Width, work.Height,
+                OverlayNative.SWP_NOZORDER | OverlayNative.SWP_NOACTIVATE);
+            check("工作区大小的窗口不算全屏（任务栏那条缝是关键）",
+                !TopmostGuard.IsFullscreen(fsHwnd),
+                work.Width + "x" + work.Height);
+            fs.Close();
+
+            // ---------- 层级重申 ----------
+            // 先真的把 TOPMOST 位摘掉（等价于「被全屏窗口压下去」），
+            // 再让守护重申一次，确认它把位补了回来 —— 不是只看配置位写得对不对。
+            OverlayNative.SetWindowPos(ovHwnd, new IntPtr(-2) /* HWND_NOTOPMOST */, 0, 0, 0, 0,
+                OverlayNative.SWP_NOMOVE | OverlayNative.SWP_NOSIZE | OverlayNative.SWP_NOACTIVATE);
+            int stripped = OverlayNative.GetWindowLong(ovHwnd, GWL_EXSTYLE);
+            check("撤销置顶后 TOPMOST 位确实被清掉（前提成立）",
+                (stripped & WS_EX_TOPMOST) == 0, "exstyle=0x" + stripped.ToString("X8"));
+
+            int before = TopmostGuard.ReassertCount;
+            TopmostGuard.ForceReassert();
+            int after = OverlayNative.GetWindowLong(ovHwnd, GWL_EXSTYLE);
+            check("重申后 TOPMOST 位恢复",
+                (after & WS_EX_TOPMOST) != 0, "exstyle=0x" + after.ToString("X8"));
+            check("重申确实执行了（计数 +1）",
+                TopmostGuard.ReassertCount == before + 1, before + " → " + TopmostGuard.ReassertCount);
+
+            // ---------- 守护定时器是不是真的在转 ----------
+            // 只验 ForceReassert 是假绿：那条路是探针自己调的，定时器彻底没跑也能通过。
+            // 这里等 1.3 秒（间隔 400ms，至少该跑 2 轮）看计数有没有涨。
+            // ---------- band 提升的真实状态 ----------
+            // 1.0.1 这里断言的是「user32!SetWindowBand 已解析」——典型的假绿：
+            // 导出存在不等于调用成功。SYSTEM_TOOLS band 需要 UIAccess，
+            // 普通权限进程调用基本都失败，所以这里只报回读到的真实状态，不当判据。
+            sb.AppendLine("[信息] band 提升状态：" + TopmostGuard.BandStatus);
+
+            check("扩展样式不含 WS_EX_NOACTIVATE（该位会让浮窗无法被激活）",
+                (OverlayNative.GetWindowLong(ovHwnd, GWL_EXSTYLE) & 0x08000000) == 0,
+                "exstyle=0x" + OverlayNative.GetWindowLong(ovHwnd, GWL_EXSTYLE).ToString("X8"));
+
+            int t0 = TopmostGuard.TickCount;
+            var until = DateTime.UtcNow.AddMilliseconds(1300);
+            while (DateTime.UtcNow < until)
+            {
+                Forms.Application.DoEvents();
+                Thread.Sleep(40);
+            }
+            int t1 = TopmostGuard.TickCount;
+            check("层级守护定时器在转（1.3 秒内至少 2 轮）", t1 - t0 >= 2, t0 + " → " + t1);
+
+            // ---------- 能拖到任务栏上，而且真的压在任务栏之上 ----------
+            //
+            // 这是 1.0.1 做反的地方：位置被夹到 workBottom-h（= 任务栏顶边再往上一个窗口高），
+            // 于是「拖到任务栏」直接被挡住。现在基线是整块屏幕，允许落在任务栏区域。
+            //
+            // 断言分两步，缺一不可：
+            // a) 几何：底部确实越过任务栏顶边（说明位置没被夹回工作区）；
+            // b) Z 序：在真实枚举顺序里浮窗排在 Shell_TrayWnd 前面（说明没被任务栏盖住）。
+            //    只验 a 是假绿 —— 位置到了但被任务栏压着，肉眼依旧看不到。
+            var trayHwnd = OverlayNative.FindWindow("Shell_TrayWnd", null);
+            if (trayHwnd == IntPtr.Zero) trayHwnd = OverlayNative.FindWindow("Shell_SecondaryTrayWnd", null);
+
+            var sb2 = new AppSettings { OffsetY = 9999 };   // 离谱的偏移，逼它一路贴到屏幕最底
+            ov.ApplySettings(sb2, false);
+            ov.UpdateLayout();
+
+            OverlayNative.RECT wr2;
+            OverlayNative.GetWindowRect(ovHwnd, out wr2);
+
+            if (trayHwnd != IntPtr.Zero)
+            {
+                OverlayNative.RECT tr;
+                OverlayNative.GetWindowRect(trayHwnd, out tr);
+
+                check("浮窗能落进任务栏区域（位置不再被夹回工作区）",
+                    wr2.Bottom > tr.Top,
+                    "浮窗底 " + wr2.Bottom + " / 任务栏顶 " + tr.Top);
+
+                // 重申一次再比 Z 序：这一轮就是 Tick 在遮挡时做的事
+                TopmostGuard.ForceReassert();
+
+                int zi = TopmostGuard.ZOrderIndex(ovHwnd);
+                int zt = TopmostGuard.ZOrderIndex(trayHwnd);
+                check("浮窗在 Z 序上高于任务栏（枚举顺序更靠前）",
+                    zi >= 0 && zt >= 0 && zi < zt, "浮窗 #" + zi + " / 任务栏 #" + zt);
+
+                // 确定性构造「被盖住」：把浮窗退出 topmost 组（HWND_NOTOPMOST），
+                // 此刻 topmost 的任务栏必然压在它上面 —— 这正是用户看到的现象。
+                // 造一个假窗口去压它反而不可靠（同 band 内的提升序列对非分层窗口不稳）。
+                TopmostGuard.Suspend();
+                OverlayNative.SetWindowPos(ovHwnd, new IntPtr(-2) /* HWND_NOTOPMOST */,
+                    0, 0, 0, 0,
+                    OverlayNative.SWP_NOMOVE | OverlayNative.SWP_NOSIZE | OverlayNative.SWP_NOACTIVATE);
+                Thread.Sleep(100);
+
+                bool occ = TopmostGuard.CheckOcclusionNow();
+                check("浮窗被任务栏盖住时，遮挡判定命中（定时器动手的依据）",
+                    occ, "occluded=" + occ + " 遮挡者=" + TopmostGuard.LastOccluder);
+
+                TopmostGuard.ForceReassert();
+                int zi2 = TopmostGuard.ZOrderIndex(ovHwnd);
+                int zt2 = TopmostGuard.ZOrderIndex(trayHwnd);
+                check("重申后浮窗回到任务栏之上（用户要的效果）",
+                    zi2 >= 0 && zt2 >= 0 && zi2 < zt2, "浮窗 #" + zi2 + " / 任务栏 #" + zt2);
+
+                TopmostGuard.Resume();
+
+                sb.AppendLine("[信息] 最近一次遮挡判定：" + TopmostGuard.LastOccluded
+                    + (TopmostGuard.LastOccluder.Length > 0 ? "  遮挡者=" + TopmostGuard.LastOccluder : ""));
+            }
+            else
+            {
+                sb.AppendLine("[信息] 找不到 Shell_TrayWnd，跳过任务栏断言");
+            }
+
+            ov.Close();
+
+            sb.AppendLine(fails == 0 ? "SUMMARY: ALL PASS" : ("SUMMARY: FAIL " + fails));
+            try
+            {
+                File.WriteAllText(Path.Combine(Path.GetTempPath(), "perfoverlay-windowaudit.txt"),
+                    sb.ToString(), Encoding.UTF8);
+            }
+            catch (Exception) { }
+
+            Shutdown(fails == 0 ? 0 : 2);
+        }
+
         /// <summary>
         /// 探测是否已有实例（互斥体是否被占用）。只用于「双击重复启动」的快速返回，
         /// 不参与真正的单实例仲裁——那一步仍然由 StartupCore 里的 Mutex 完成。
@@ -2147,6 +2360,7 @@ namespace PerfOverlay
                 || HasArg(args, "--selftest")
                 || HasArg(args, "--measure")
                 || HasArg(args, "--measure-settings")
+                || HasArg(args, "--window-audit")
                 || HasArg(args, "--theme-probe")
                 || HasArg(args, "--tray-icon-test")
                 || HasArg(args, "--hotkey-test")
@@ -3023,5 +3237,34 @@ namespace PerfOverlay
         public override Color ImageMarginGradientEnd { get { return _p.Back; } }
         public override Color SeparatorDark { get { return _p.Separator; } }
         public override Color SeparatorLight { get { return _p.Back; } }
+    }
+
+    /// <summary>
+    /// 窗口层级自检用的最小 Win32 封装（只给 --window-audit 用，运行时不走这里）。
+    /// 另起一个类而不是复用 Views.NativeMethods：那边只暴露了 Get/SetWindowLong，
+    /// 而自检要真摆一个全屏窗口、真摘一次 TOPMOST 位，需要 SetWindowPos 与 FindWindow。
+    /// </summary>
+    internal static class OverlayNative
+    {
+        public const uint SWP_NOSIZE = 0x0001;
+        public const uint SWP_NOMOVE = 0x0002;
+        public const uint SWP_NOZORDER = 0x0004;
+        public const uint SWP_NOACTIVATE = 0x0010;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+        public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
+            int X, int Y, int cx, int cy, uint uFlags);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        public struct RECT { public int Left, Top, Right, Bottom; }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
     }
 }

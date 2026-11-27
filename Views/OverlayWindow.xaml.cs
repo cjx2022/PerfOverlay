@@ -72,6 +72,10 @@ namespace PerfOverlay.Views
             // 宽度在 BuildGroups 里按实测文字算定，这里只需定位
             Loaded += (s, e) => { UpdateLayout(); Reposition(); };
             SizeChanged += (s, e) => Reposition();
+
+            // 窗口关掉就停掉层级守护：定时器跨窗口存活，句柄失效后再 SetWindowPos
+            // 只是白费调用，还会让探针的 ReassertCount 继续涨、误导断言。
+            Closed += (s, e) => TopmostGuard.Detach();
         }
 
         protected override void OnSourceInitialized(EventArgs e)
@@ -80,6 +84,14 @@ namespace PerfOverlay.Views
             ApplyWindowStyle();
         }
 
+        /// <summary>
+        /// 浮窗是**工具窗口**（WS_EX_TOOLWINDOW）：不进任务栏、不进 Alt+Tab。
+        ///
+        /// 1.0.1 我误以为「无法显示在任务栏」是指任务栏里缺按钮，于是把这个样式去掉了 ——
+        /// 结果任务栏凭空多出一个 PerfOverlay 图标，点它还会把浮窗拉出来，纯属噪音。
+        /// 用户要的是「浮窗能拖到任务栏那块区域上面」，不是「浮窗变成任务栏里的一个程序」。
+        /// 这里改回工具窗口，位置问题由 ClampToScreen 单独负责，两者互不相干。
+        /// </summary>
         private void ApplyWindowStyle()
         {
             var hwnd = new WindowInteropHelper(this).Handle;
@@ -87,9 +99,23 @@ namespace PerfOverlay.Views
 
             int ex = NativeMethods.GetWindowLong(hwnd, GWL_EXSTYLE);
             ex |= WS_EX_TOOLWINDOW;
-            if (_settings.ClickThrough) ex |= WS_EX_TRANSPARENT | WS_EX_NOACTIVATE;
-            else ex &= ~(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE);
+            ex &= ~WS_EX_NOACTIVATE;
+
+            // 点击穿透只加 WS_EX_TRANSPARENT：TRANSPARENT 本身已经保证鼠标点不到浮窗，
+            // NOACTIVATE 是多余的，而它会让窗口彻底不可激活（连带工具窗口语义更死）。
+            if (_settings.ClickThrough) ex |= WS_EX_TRANSPARENT;
+            else ex &= ~WS_EX_TRANSPARENT;
             NativeMethods.SetWindowLong(hwnd, GWL_EXSTYLE, ex);
+
+            // 改扩展样式后要让 shell 重新读一遍窗口属性，否则任务栏按钮可能残留不消失
+            NativeMethods.SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0,
+                NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE
+                | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE
+                | NativeMethods.SWP_FRAMECHANGED);
+
+            // 全屏应用会把全屏窗口顶到最上层，WPF 的 Topmost 只在下一次 SetWindowPos
+            // 之前有效。挂上守护定时器，检测到前台是全屏窗口就把自己重新钉回去。
+            TopmostGuard.Attach(hwnd);
         }
 
         // ==================================================================
@@ -121,6 +147,25 @@ namespace PerfOverlay.Views
 
             ApplyWindowStyle();
             Reposition();
+
+            // 夹紧后的真实位置要写回偏移，否则旧的越界坐标会一直留在 settings.json 里，
+            // 每次启动都得再夹一次。只在窗口已加载时同步：构造期 Left/Top 还是 NaN。
+            if (IsLoaded) SyncOffsetFromPosition();
+        }
+
+        /// <summary>把当前 Left/Top 反算成 OffsetX/OffsetY，与拖动结束时的算法保持同一口径。</summary>
+        private void SyncOffsetFromPosition()
+        {
+            if (double.IsNaN(Left) || double.IsNaN(Top)) return;
+
+            double w = ActualWidth > 0 ? ActualWidth : Width;
+            if (double.IsNaN(w) || w <= 0) w = 200;
+
+            double wl, wt, wr, wb;
+            GetWorkAreaDip(out wl, out wt, out wr, out wb);
+
+            _settings.OffsetX = Left - (wr - w - EdgeRight);
+            _settings.OffsetY = Top - (wt + EdgeTop);
         }
 
         private void BuildGroups()
@@ -485,16 +530,57 @@ namespace PerfOverlay.Views
             double workLeft, workTop, workRight, workBottom;
             GetWorkAreaDip(out workLeft, out workTop, out workRight, out workBottom);
 
+            // 基准位置仍按工作区算（默认贴右上角，不压任务栏），
+            // 但边界夹紧按整块屏幕算 —— 用户往上拖到任务栏/屏幕底是合法操作。
             double left = workRight - w - EdgeRight + _settings.OffsetX;
             double top = workTop + EdgeTop + _settings.OffsetY;
 
-            if (left < workLeft) left = workLeft;
-            if (left > workRight - 40) left = workRight - 40;
-            if (top < workTop) top = workTop;
-            if (top > workBottom - 24) top = workBottom - 24;
+            double scLeft, scTop, scRight, scBottom;
+            GetScreenDip(out scLeft, out scTop, out scRight, out scBottom);
+            ClampToScreen(ref left, ref top, w, WindowHeight(), scLeft, scTop, scRight, scBottom);
 
             Left = left;
             Top = top;
+        }
+
+        /// <summary>窗口高度：布局没跑完时依次退回 Height / DesiredSize。</summary>
+        private double WindowHeight()
+        {
+            double h = ActualHeight > 0 ? ActualHeight : Height;
+            if (double.IsNaN(h) || h <= 0) h = DesiredSize.Height;
+            if (double.IsNaN(h) || h <= 0) h = 40;
+            return h;
+        }
+
+        /// <summary>
+        /// 把窗口矩形夹进**整块屏幕**（不是工作区）。
+        ///
+        /// 1.0.1 在这里犯了个方向性错误：把纵向夹到 <c>workBottom - h</c>，也就是工作区底边
+        /// 往上收一整个窗口高度。而工作区底边 = 任务栏顶边，所以浮窗永远进不了任务栏那一块，
+        /// 表现就是「拖到任务栏就停住 / 拖不上去」。这是把用户的诉求做反了 ——
+        /// 用户要的恰恰是能贴到屏幕最底部、压在任务栏上（右下角那块常年空着，最适合放浮窗）。
+        ///
+        /// 现在基线换成 <c>Screen.Bounds</c>（含任务栏），只保证**至少留 VisibleGrip 能抓住**：
+        /// - 纵向：可以一路拖到屏幕底，最多让窗口底部超出屏幕，但顶部必须留 24 DIP 在屏内；
+        /// - 横向：留 40 DIP 在屏内，避免拖出屏幕后彻底找不回来。
+        ///
+        /// 压在任务栏之上这件事不归几何管 —— 那是 Z 序问题，由 TopmostGuard 负责。
+        /// 位置放开但层级压不上去，视觉上仍然是"被任务栏盖住"，两件事必须一起修。
+        /// </summary>
+        private const double VisibleGrip = 24;
+
+        private static void ClampToScreen(ref double left, ref double top,
+            double w, double h, double screenLeft, double screenTop, double screenRight, double screenBottom)
+        {
+            if (left < screenLeft - (w - 40)) left = screenLeft - (w - 40);
+            if (left > screenRight - 40) left = screenRight - 40;
+
+            if (top < screenTop) top = screenTop;
+
+            // 允许底部越出屏幕（贴着屏幕最底时必然发生），但顶部别走丢
+            double maxTop = screenBottom - VisibleGrip;
+            if (maxTop < screenTop) maxTop = screenTop;
+            if (top > maxTop) top = maxTop;
         }
 
         /// <summary>
@@ -606,6 +692,33 @@ namespace PerfOverlay.Views
             left = wa.Left; top = wa.Top; right = wa.Right; bottom = wa.Bottom;
         }
 
+        /// <summary>
+        /// 整块屏幕的 DIP 矩形（含任务栏）。拖动边界用这个，不用工作区。
+        /// 与 <see cref="GetWorkAreaDip"/> 一样先走 Screen.PrimaryScreen，失败再退回 SystemParameters。
+        /// </summary>
+        private void GetScreenDip(out double left, out double top, out double right, out double bottom)
+        {
+            var dpi = VisualTreeHelper.GetDpi(this);
+            double sx = dpi.DpiScaleX <= 0 ? 1 : dpi.DpiScaleX;
+            double sy = dpi.DpiScaleY <= 0 ? 1 : dpi.DpiScaleY;
+
+            try
+            {
+                var r = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
+                left = r.Left / sx;
+                top = r.Top / sy;
+                right = r.Right / sx;
+                bottom = r.Bottom / sy;
+                return;
+            }
+            catch (Exception) { }
+
+            // 退路：工作区 + 假定的任务栏高度（拿不到真实屏幕时只能这样兜底）
+            double wl, wt, wr, wb;
+            GetWorkAreaDip(out wl, out wt, out wr, out wb);
+            left = wl; top = wt; right = wr; bottom = wb + 40;
+        }
+
         // ==================================================================
         // 交互
         // ==================================================================
@@ -636,8 +749,18 @@ namespace PerfOverlay.Views
             double dx = (cur.X - _lastScreenPoint.X) / dpi.DpiScaleX;
             double dy = (cur.Y - _lastScreenPoint.Y) / dpi.DpiScaleY;
 
-            Left += dx;
-            Top += dy;
+            double left = Left + dx;
+            double top = Top + dy;
+
+            // 拖拽边界按整块屏幕算：任务栏那块是允许落脚的（这是 1.0.1 最大的方向错误，
+            // 夹到工作区里等于禁止用户把浮窗放到自己想去的位置）。
+            double sl, st, sr, sb;
+            GetScreenDip(out sl, out st, out sr, out sb);
+            ClampToScreen(ref left, ref top,
+                ActualWidth > 0 ? ActualWidth : 200, WindowHeight(), sl, st, sr, sb);
+
+            Left = left;
+            Top = top;
             _lastScreenPoint = cur;
         }
 
@@ -698,5 +821,15 @@ namespace PerfOverlay.Views
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+        public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
+            int X, int Y, int cx, int cy, uint uFlags);
+
+        public const uint SWP_NOSIZE = 0x0001;
+        public const uint SWP_NOMOVE = 0x0002;
+        public const uint SWP_NOZORDER = 0x0004;
+        public const uint SWP_NOACTIVATE = 0x0010;
+        public const uint SWP_FRAMECHANGED = 0x0020;
     }
 }

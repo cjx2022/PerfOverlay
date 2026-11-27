@@ -14,10 +14,10 @@
     <Platforms>x64</Platforms>
 
     <!-- 版本与署名 -->
-    <Version>1.0.0</Version>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
-    <InformationalVersion>1.0.0</InformationalVersion>
+    <Version>1.0.1</Version>
+    <AssemblyVersion>1.0.1.0</AssemblyVersion>
+    <FileVersion>1.0.1.0</FileVersion>
+    <InformationalVersion>1.0.1</InformationalVersion>
     <AssemblyTitle>PerfOverlay 性能浮窗</AssemblyTitle>
     <Product>PerfOverlay</Product>
     <Description>轻量桌面性能浮窗：CPU / 内存 / 帧数 / 1% Low / 显存 / GPU / 温度 / 时间</Description>
@@ -48,7 +48,9 @@
   </ItemGroup>
 
   <!-- _tools 下是配套的验证小工具（独立项目），不要被主项目编译进去；
-       _test 是排障用的一次性脚本与参考源码，同样不能进编译（里面有从上游拉下来的 .cs） -->
+       _test 是排障用的一次性脚本与参考源码，同样不能进编译（里面有从上游拉下来的 .cs）；
+       _backup 是打包归档产物（里面有一整份 04-代码包/src），SDK 默认 glob 会把它
+       整个收进 Compile，一打包就编不过 —— 三处必须一起排掉，光排 _tools 不够。 -->
   <ItemGroup>
     <Compile Remove="_tools\**" />
     <Page Remove="_tools\**" />
@@ -59,6 +61,11 @@
     <Page Remove="_test\**" />
     <None Remove="_test\**" />
     <EmbeddedResource Remove="_test\**" />
+
+    <Compile Remove="_backup\**" />
+    <Page Remove="_backup\**" />
+    <None Remove="_backup\**" />
+    <EmbeddedResource Remove="_backup\**" />
   </ItemGroup>
 
   <!--

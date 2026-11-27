@@ -105,7 +105,7 @@ namespace PerfOverlay.Services
         }
 
         /// <summary>
-        /// 配图用的浮窗设置：九项指标全开、中等字号、默认白字带描边。
+        /// 配图用的浮窗设置：十项指标全开、中等字号、默认白字带描边。
         /// 同 RenderPanel：不读本机配置，保证图可复现、不带个人痕迹。
         /// </summary>
         private static AppSettings OverlaySettings()
@@ -113,7 +113,7 @@ namespace PerfOverlay.Services
             return new AppSettings
             {
                 ShowCpu = true, ShowMemory = true, ShowFps = true, ShowLowFps = true, ShowVram = true,
-                ShowClock = false, ShowGpu = true, ShowCpuTemp = true, ShowGpuTemp = true,
+                ShowClock = true, ShowGpu = true, ShowCpuTemp = true, ShowGpuTemp = true,
                 SizeMode = "M",
                 TextColor = "#FFFFFF",
                 ShowLabels = true,
